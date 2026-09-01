@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Modal, Alert } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, ScrollView, Alert } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Check, Target, Save, LogOut } from 'lucide-react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
@@ -11,19 +11,26 @@ export default function LiveCameraScreen({ route, navigation }) {
   const cameraRef = useRef(null);
   
   // Params
-  const sessionType = route?.params?.sessionType || 'MATCH'; // MATCH or PRACTICE
+  const sessionType = route?.params?.sessionType || 'MATCH'; 
   const matchDetails = route?.params?.matchDetails || {
-    teamA: 'Team A', teamB: 'Team B', format: 'T20', striker: 'Striker', nonStriker: 'Non-Striker'
+    teamA: 'Team A', teamB: 'Team B', format: 'T20', striker: 'Striker', nonStriker: 'Non-Striker', roster: ['Striker', 'Non-Striker']
   };
 
   const [mode, setMode] = useState('CALIBRATE_STRIKER'); // CALIBRATE_STRIKER | CALIBRATE_NON_STRIKER | LIVE
   
-  const [activeStriker, setActiveStriker] = useState(1); // 1 or 2
+  // Roster Management
+  const [activeStriker, setActiveStriker] = useState(1); // 1 = Striker, 2 = Non-Striker
+  const [strikerName, setStrikerName] = useState(matchDetails.striker);
+  const [nonStrikerName, setNonStrikerName] = useState(matchDetails.nonStriker);
+  const [yetToBat, setYetToBat] = useState(matchDetails.roster?.filter(p => p !== matchDetails.striker && p !== matchDetails.nonStriker) || []);
+  
+  // Calibration
   const [strikerStumps, setStrikerStumps] = useState([]);
   const [nonStrikerStumps, setNonStrikerStumps] = useState([]);
   
+  // Match Engine
   const [score, setScore] = useState({ runs: 0, wickets: 0, balls: 0, extras: 0 });
-  const [engineState, setEngineState] = useState('IDLE'); // IDLE | RECORDING_CLIP | SCORING
+  const [engineState, setEngineState] = useState('IDLE'); // IDLE | RECORDING_CLIP | SCORING | SELECT_BATSMAN
   const [showWicketOptions, setShowWicketOptions] = useState(false);
   const [showTrail, setShowTrail] = useState(false);
 
@@ -55,7 +62,6 @@ export default function LiveCameraScreen({ route, navigation }) {
     
     setTimeout(() => {
       if (sessionType === 'PRACTICE') {
-        // Skip scoring in practice mode, just save and reset
         setShowTrail(true);
         Alert.alert('Clip Saved', 'Practice clip stored.');
         setTimeout(() => {
@@ -72,20 +78,20 @@ export default function LiveCameraScreen({ route, navigation }) {
 
   const handleScore = (runs, type = 'RUNS') => {
     let newScore = { ...score };
+    let isWicket = false;
     
     if (type === 'WICKET') {
       newScore.wickets += 1;
       newScore.balls += 1;
+      isWicket = true;
     } else if (type === 'EXTRA') {
       newScore.runs += runs;
       newScore.extras += runs;
-      // balls do not increment for WD/NB usually, assuming this button is WD/NB
     } else {
       newScore.runs += runs;
       newScore.balls += 1;
     }
     
-    // Rotate strike
     if (type !== 'EXTRA' && type !== 'WICKET' && runs % 2 !== 0) {
       setActiveStriker(activeStriker === 1 ? 2 : 1);
     }
@@ -94,6 +100,26 @@ export default function LiveCameraScreen({ route, navigation }) {
     }
     
     setScore(newScore);
+    
+    if (isWicket) {
+      if (yetToBat.length > 0) {
+        setEngineState('SELECT_BATSMAN');
+      } else {
+        Alert.alert('All Out!', 'The innings has concluded.');
+        setEngineState('IDLE');
+      }
+    } else {
+      setEngineState('IDLE');
+    }
+  };
+
+  const selectNewBatsman = (player) => {
+    if (activeStriker === 1) {
+      setStrikerName(player);
+    } else {
+      setNonStrikerName(player);
+    }
+    setYetToBat(yetToBat.filter(p => p !== player));
     setEngineState('IDLE');
   };
 
@@ -166,8 +192,8 @@ export default function LiveCameraScreen({ route, navigation }) {
                     <Text style={styles.overs}>({Math.floor(score.balls / 6)}.{score.balls % 6})</Text>
                   </View>
                   <View style={styles.batsmenRow}>
-                    <Text style={[styles.batsmanText, activeStriker === 1 && styles.activeBatsman]}>{matchDetails.striker} {activeStriker === 1 && '*'}</Text>
-                    <Text style={[styles.batsmanText, activeStriker === 2 && styles.activeBatsman]}>{matchDetails.nonStriker} {activeStriker === 2 && '*'}</Text>
+                    <Text style={[styles.batsmanText, activeStriker === 1 && styles.activeBatsman]}>{strikerName} {activeStriker === 1 && '*'}</Text>
+                    <Text style={[styles.batsmanText, activeStriker === 2 && styles.activeBatsman]}>{nonStrikerName} {activeStriker === 2 && '*'}</Text>
                   </View>
                 </View>
               )}
@@ -192,6 +218,20 @@ export default function LiveCameraScreen({ route, navigation }) {
               )}
 
               {renderBallTrail()}
+
+              {/* NEW BATSMAN SELECTION POPUP */}
+              {engineState === 'SELECT_BATSMAN' && (
+                <View style={styles.scoringPopup}>
+                  <Text style={styles.popupTitle}>Wicket! Select Next Batsman</Text>
+                  <ScrollView style={{maxHeight: 200, marginTop: 15}}>
+                    {yetToBat.map(player => (
+                      <TouchableOpacity key={player} style={styles.playerSelectRow} onPress={() => selectNewBatsman(player)}>
+                        <Text style={styles.playerSelectText}>{player}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
 
               {/* ADVANCED SCORING POPUP */}
               {engineState === 'SCORING' && (
@@ -288,5 +328,8 @@ const styles = StyleSheet.create({
   scoreBoxText: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
   extrasGrid: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
   wicketBox: { width: '48%', backgroundColor: 'rgba(255, 23, 68, 0.1)', borderColor: '#ff1744' },
-  extraBox: { width: '48%', backgroundColor: 'rgba(255, 234, 0, 0.1)', borderColor: '#ffea00' }
+  extraBox: { width: '48%', backgroundColor: 'rgba(255, 234, 0, 0.1)', borderColor: '#ffea00' },
+
+  playerSelectRow: { backgroundColor: '#1e1e1e', paddingVertical: 15, paddingHorizontal: 20, borderRadius: 12, marginBottom: 10, borderWidth: 1, borderColor: '#333' },
+  playerSelectText: { color: '#fff', fontSize: 16, fontWeight: 'bold' }
 });
