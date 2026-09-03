@@ -26,8 +26,7 @@
         {
           "cameraPermission": "Allow CricCoach to access your camera."
         }
-      ],
-      "react-native-worklets-core"
+      ]
     ]
   }
 }
