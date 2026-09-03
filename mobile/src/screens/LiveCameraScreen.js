@@ -1,14 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Alert, Modal } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission, useFrameProcessor, runAtTargetFps } from 'react-native-vision-camera';
-import { Worklets } from 'react-native-worklets-core';
+import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import { Check, Target, LogOut, AlertTriangle, X, Trophy } from 'lucide-react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
 
 const { width, height } = Dimensions.get('window');
 
 export default function LiveCameraScreen({ route, navigation }) {
-  const { hasPermission, requestPermission } = useCameraPermission();
   const device = useCameraDevice('back');
   const cameraRef = useRef(null);
   
@@ -54,27 +52,29 @@ export default function LiveCameraScreen({ route, navigation }) {
   const [isAutoTracking, setIsAutoTracking] = useState(false);
   const isAutoTrackingRef = useRef(false);
 
+  const [hasPermission, setHasPermission] = useState(false);
+
   useEffect(() => {
-    if (!hasPermission) requestPermission();
-  }, [hasPermission]);
+    (async () => {
+      const status = await Camera.requestCameraPermission();
+      setHasPermission(status === 'granted');
+    })();
+  }, []);
 
-  // ON-DEVICE ML FRAME PROCESSOR (VISION CAMERA)
-  const triggerRecording = Worklets.createRunOnJS(() => {
-    if (engineState !== 'IDLE' || !isAutoTrackingRef.current) return;
-    captureDelivery();
-  });
-
-  const frameProcessor = useFrameProcessor((frame) => {
-    'worklet'
-    runAtTargetFps(2, () => {
-      // In Phase 3, you inject real CoreML/TFLite model here: const isBowl = detectPose(frame)
-      // For now, we simulate the ML detecting a bowler randomly every few seconds
-      const detectedBowlerRelease = Math.random() < 0.05; 
-      if (detectedBowlerRelease) {
-        triggerRecording();
-      }
-    });
-  }, [engineState]);
+  // AUTONOMOUS LOOP SIMULATION
+  useEffect(() => {
+    let interval;
+    if (isAutoTracking && engineState === 'IDLE') {
+      interval = setInterval(() => {
+        // Simulate AI model detecting delivery every 5-10 seconds
+        const detectedBowlerRelease = Math.random() < 0.2; 
+        if (detectedBowlerRelease) {
+          captureDelivery();
+        }
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [isAutoTracking, engineState]);
 
   const handleTap = (e) => {
     const { pageX, pageY } = e.nativeEvent;
@@ -88,12 +88,10 @@ export default function LiveCameraScreen({ route, navigation }) {
   const startAutoTracking = () => {
     if (engineState !== 'IDLE') return;
     setIsAutoTracking(true);
-    isAutoTrackingRef.current = true;
   };
 
   const stopAutoTracking = () => {
     setIsAutoTracking(false);
-    isAutoTrackingRef.current = false;
     setEngineState('IDLE');
   };
 
@@ -219,7 +217,6 @@ export default function LiveCameraScreen({ route, navigation }) {
           device={device} 
           isActive={true} 
           video={true}
-          frameProcessor={isAutoTracking ? frameProcessor : undefined}
           ref={cameraRef} 
         />
         
