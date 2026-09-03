@@ -18,6 +18,11 @@ def process_ball_tracking(video_path: str):
     time.sleep(1)
     
     # Randomly generate some realistic data for demonstration
+    is_spinner = random.choice([True, False])
+    speed = round(random.uniform(75.0, 95.0), 1) if is_spinner else round(random.uniform(130.0, 150.0), 1)
+    swing = round(random.uniform(-3.5, 3.5), 1) if not is_spinner else 0.0
+    turn = round(random.uniform(-5.0, 5.0), 1) if is_spinner else 0.0
+    
     pitching = random.choice(["IN LINE", "OUTSIDE OFF", "OUTSIDE LEG"])
     impact = random.choice(["IN LINE", "UMPIRE'S CALL", "OUTSIDE"])
     
@@ -35,6 +40,9 @@ def process_ball_tracking(video_path: str):
         "hawkeye": {
             "pitching": pitching,
             "impact": impact,
-            "wickets": wickets
+            "wickets": wickets,
+            "speed": speed,
+            "swing": swing,
+            "turn": turn
         }
     }

@@ -10,6 +10,7 @@ import LiveCameraScreen from '../screens/LiveCameraScreen';
 import SessionsScreen from '../screens/SessionsScreen';
 import AnalysisScreen from '../screens/AnalysisScreen';
 import AICoachScreen from '../screens/AICoachScreen';
+import PostMatchAnalysisScreen from '../screens/PostMatchAnalysisScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -32,6 +33,7 @@ function PlayStack() {
       <Stack.Screen name="Home" component={HomeScreen} />
       <Stack.Screen name="MatchSetup" component={MatchSetupScreen} />
       <Stack.Screen name="LiveCamera" component={LiveCameraScreen} />
+      <Stack.Screen name="PostMatchAnalysis" component={PostMatchAnalysisScreen} />
     </Stack.Navigator>
   );
 }

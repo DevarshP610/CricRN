@@ -44,6 +44,7 @@ export default function LiveCameraScreen({ route, navigation }) {
   const [score, setScore] = useState(route?.params?.score || { runs: 0, wickets: 0, balls: 0, extras: 0 });
   const [engineState, setEngineState] = useState('IDLE'); 
   const [showTrail, setShowTrail] = useState(false);
+  const [recentStats, setRecentStats] = useState(null);
 
   // Umpire AI & DRS
   const [isNoBall, setIsNoBall] = useState(false);
@@ -150,6 +151,14 @@ export default function LiveCameraScreen({ route, navigation }) {
   };
 
   const handleBackendResponse = (aiData) => {
+    if (aiData.hawkeye) {
+      setRecentStats({
+        speed: aiData.hawkeye.speed || '85.2',
+        swing: aiData.hawkeye.swing || '1.2',
+        turn: aiData.hawkeye.turn || '0.5'
+      });
+    }
+
     if (aiData.isNoBall) {
       setIsNoBall(true);
       setIsFreeHit(true);
@@ -296,6 +305,39 @@ export default function LiveCameraScreen({ route, navigation }) {
 
         {mode === 'LIVE' && !isNoBall && (
           <>
+            {/* END MATCH BUTTON */}
+            <TouchableOpacity style={styles.endMatchBtn} onPress={() => {
+              Alert.alert('End Match', 'Are you sure you want to end and analyze this match?', [
+                {text: 'Cancel', style: 'cancel'},
+                {text: 'End', style: 'destructive', onPress: () => {
+                  AsyncStorage.removeItem('saved_matches');
+                  navigation.replace('PostMatchAnalysis'); 
+                }}
+              ]);
+            }}>
+              <LogOut color="#fff" size={20} />
+              <Text style={styles.endMatchText}>END MATCH</Text>
+            </TouchableOpacity>
+
+            {/* RECENT STATS WIDGET */}
+            {recentStats && engineState === 'IDLE' && (
+              <View style={styles.recentStatsWidget}>
+                <Text style={styles.recentStatsTitle}>LAST BALL</Text>
+                <View style={styles.statLine}>
+                  <Text style={styles.statLineLabel}>Speed:</Text>
+                  <Text style={styles.statLineValue}>{recentStats.speed} km/h</Text>
+                </View>
+                <View style={styles.statLine}>
+                  <Text style={styles.statLineLabel}>Swing:</Text>
+                  <Text style={styles.statLineValue}>{recentStats.swing}°</Text>
+                </View>
+                <View style={styles.statLine}>
+                  <Text style={styles.statLineLabel}>Turn:</Text>
+                  <Text style={styles.statLineValue}>{recentStats.turn}°</Text>
+                </View>
+              </View>
+            )}
+
             {/* ADVANCED SCOREBOARD */}
             {sessionType === 'MATCH' && (
               <View style={styles.scoreboardContainer}>
@@ -400,5 +442,14 @@ const styles = StyleSheet.create({
   stepperBtnText: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
   stepperValue: { color: '#00e676', fontSize: 32, fontWeight: '900', width: 100, textAlign: 'center' },
   saveSettingsBtn: { backgroundColor: '#00e676', paddingVertical: 15, borderRadius: 10 },
-  saveSettingsText: { color: '#000', textAlign: 'center', fontWeight: '900', fontSize: 16 }
+  saveSettingsText: { color: '#000', textAlign: 'center', fontWeight: '900', fontSize: 16 },
+
+  endMatchBtn: { position: 'absolute', top: 50, left: 20, backgroundColor: 'rgba(255, 23, 68, 0.8)', flexDirection: 'row', paddingVertical: 10, paddingHorizontal: 15, borderRadius: 20, alignItems: 'center' },
+  endMatchText: { color: '#fff', fontWeight: 'bold', marginLeft: 8 },
+
+  recentStatsWidget: { position: 'absolute', top: 120, right: 20, backgroundColor: 'rgba(0,0,0,0.7)', padding: 15, borderRadius: 15, borderWidth: 1, borderColor: '#333' },
+  recentStatsTitle: { color: '#00e676', fontWeight: '900', marginBottom: 10, textAlign: 'center', fontSize: 16 },
+  statLine: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5, width: 120 },
+  statLineLabel: { color: '#aaa', fontWeight: 'bold' },
+  statLineValue: { color: '#fff', fontWeight: 'bold' }
 });
