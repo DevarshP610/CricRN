@@ -3,6 +3,7 @@ import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Ale
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import { Check, Target, LogOut, AlertTriangle, X, Trophy } from 'lucide-react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width, height } = Dimensions.get('window');
 
@@ -19,26 +20,28 @@ export default function LiveCameraScreen({ route, navigation }) {
     striker: 'P1', nonStriker: 'P2'
   };
 
-  const [mode, setMode] = useState('CALIBRATE_STRIKER'); 
+  const matchId = useRef(route?.params?.savedMatchId || new Date().getTime().toString()).current;
+  
+  const [mode, setMode] = useState(route?.params?.isResume ? 'LIVE' : 'CALIBRATE_STRIKER'); 
   
   // Innings Management
-  const [innings, setInnings] = useState(1);
-  const [targetScore, setTargetScore] = useState(null);
-  const [battingTeam, setBattingTeam] = useState(matchDetails.battingTeamName);
-  const [bowlingTeam, setBowlingTeam] = useState(matchDetails.bowlingTeamName);
+  const [innings, setInnings] = useState(route?.params?.innings || 1);
+  const [targetScore, setTargetScore] = useState(route?.params?.targetScore || null);
+  const [battingTeam, setBattingTeam] = useState(route?.params?.battingTeam || matchDetails.battingTeamName);
+  const [bowlingTeam, setBowlingTeam] = useState(route?.params?.bowlingTeam || matchDetails.bowlingTeamName);
   
   // Roster Management
-  const [activeStriker, setActiveStriker] = useState(1);
-  const [strikerName, setStrikerName] = useState(matchDetails.striker);
-  const [nonStrikerName, setNonStrikerName] = useState(matchDetails.nonStriker);
-  const [yetToBat, setYetToBat] = useState(matchDetails.battingRoster.filter(p => p !== matchDetails.striker && p !== matchDetails.nonStriker));
+  const [activeStriker, setActiveStriker] = useState(route?.params?.activeStriker || 1);
+  const [strikerName, setStrikerName] = useState(route?.params?.strikerName || matchDetails.striker);
+  const [nonStrikerName, setNonStrikerName] = useState(route?.params?.nonStrikerName || matchDetails.nonStriker);
+  const [yetToBat, setYetToBat] = useState(route?.params?.yetToBat || matchDetails.battingRoster.filter(p => p !== matchDetails.striker && p !== matchDetails.nonStriker));
   
   // Calibration
   const [strikerStumps, setStrikerStumps] = useState([]);
   const [nonStrikerStumps, setNonStrikerStumps] = useState([]);
   
   // Match Engine
-  const [score, setScore] = useState({ runs: 0, wickets: 0, balls: 0, extras: 0 });
+  const [score, setScore] = useState(route?.params?.score || { runs: 0, wickets: 0, balls: 0, extras: 0 });
   const [engineState, setEngineState] = useState('IDLE'); 
   const [showTrail, setShowTrail] = useState(false);
 
@@ -47,10 +50,6 @@ export default function LiveCameraScreen({ route, navigation }) {
   const [isFreeHit, setIsFreeHit] = useState(false);
   const [showDRSModal, setShowDRSModal] = useState(false);
   const [drsStep, setDrsStep] = useState(0); 
-
-  // AUTONOMOUS LOOP
-  const [isAutoTracking, setIsAutoTracking] = useState(false);
-  const isAutoTrackingRef = useRef(false);
 
   const [hasPermission, setHasPermission] = useState(false);
 
@@ -61,20 +60,47 @@ export default function LiveCameraScreen({ route, navigation }) {
     })();
   }, []);
 
-  // AUTONOMOUS LOOP SIMULATION
+  // RECORDING SETTINGS
+  const [recordingDuration, setRecordingDuration] = useState(5);
+  const [showSettings, setShowSettings] = useState(false);
+
+  // AUTO-SAVE MATCH STATE
   useEffect(() => {
-    let interval;
-    if (isAutoTracking && engineState === 'IDLE') {
-      interval = setInterval(() => {
-        // Simulate AI model detecting delivery every 5-10 seconds
-        const detectedBowlerRelease = Math.random() < 0.2; 
-        if (detectedBowlerRelease) {
-          captureDelivery();
+    if (score.balls > 0 || score.runs > 0 || score.wickets > 0) {
+      const saveMatch = async () => {
+        try {
+          const matchData = {
+            id: matchId,
+            date: new Date().toISOString(),
+            sessionType,
+            matchDetails,
+            score,
+            innings,
+            battingTeam,
+            bowlingTeam,
+            activeStriker,
+            strikerName,
+            nonStrikerName,
+            yetToBat,
+            targetScore
+          };
+          
+          const existing = await AsyncStorage.getItem('saved_matches');
+          let matches = existing ? JSON.parse(existing) : [];
+          
+          // Update existing or add new
+          const idx = matches.findIndex(m => m.id === matchData.id);
+          if (idx >= 0) matches[idx] = matchData;
+          else matches.unshift(matchData);
+          
+          await AsyncStorage.setItem('saved_matches', JSON.stringify(matches));
+        } catch (e) {
+          console.log('Auto-save failed:', e);
         }
-      }, 1000);
+      };
+      saveMatch();
     }
-    return () => clearInterval(interval);
-  }, [isAutoTracking, engineState]);
+  }, [score, innings, battingTeam, activeStriker, strikerName, nonStrikerName]);
 
   const handleTap = (e) => {
     const { pageX, pageY } = e.nativeEvent;
@@ -83,16 +109,6 @@ export default function LiveCameraScreen({ route, navigation }) {
     } else if (mode === 'CALIBRATE_NON_STRIKER' && nonStrikerStumps.length < 3) {
       setNonStrikerStumps([...nonStrikerStumps, { x: pageX, y: pageY }]);
     }
-  };
-
-  const startAutoTracking = () => {
-    if (engineState !== 'IDLE') return;
-    setIsAutoTracking(true);
-  };
-
-  const stopAutoTracking = () => {
-    setIsAutoTracking(false);
-    setEngineState('IDLE');
   };
 
   const captureDelivery = async () => {
@@ -121,9 +137,11 @@ export default function LiveCameraScreen({ route, navigation }) {
       });
       
       // FullTrack AI stops recording 3 seconds after release
-      setTimeout(() => {
-        if (cameraRef.current) cameraRef.current.stopRecording();
-      }, 3000);
+      setTimeout(async () => {
+        if (cameraRef.current) {
+          await cameraRef.current.stopRecording();
+        }
+      }, recordingDuration * 1000);
       
     } catch (error) {
       console.log('Error triggering recording:', error);
@@ -209,6 +227,32 @@ export default function LiveCameraScreen({ route, navigation }) {
   return (
     <SafeAreaView style={styles.container}>
       
+      {/* SETTINGS MODAL */}
+      <Modal visible={showSettings} transparent={true} animationType="fade">
+        <View style={styles.modalBg}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Camera Settings</Text>
+            
+            <Text style={styles.settingsLabel}>Recording Window (Seconds)</Text>
+            <Text style={styles.settingsSubtext}>Adjust based on your run-up length.</Text>
+            
+            <View style={styles.stepperContainer}>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setRecordingDuration(Math.max(2, recordingDuration - 1))}>
+                <Text style={styles.stepperBtnText}>-</Text>
+              </TouchableOpacity>
+              <Text style={styles.stepperValue}>{recordingDuration}s</Text>
+              <TouchableOpacity style={styles.stepperBtn} onPress={() => setRecordingDuration(Math.min(15, recordingDuration + 1))}>
+                <Text style={styles.stepperBtnText}>+</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity style={styles.saveSettingsBtn} onPress={() => setShowSettings(false)}>
+              <Text style={styles.saveSettingsText}>DONE</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+      
       {/* DRS MODAL OMITTED FOR BREVITY BUT WORKS SAME WAY */}
       
       <View style={StyleSheet.absoluteFillObject} onTouchEnd={handleTap}>
@@ -281,7 +325,7 @@ export default function LiveCameraScreen({ route, navigation }) {
             {engineState === 'RECORDING_CLIP' && (
               <View style={styles.recordingOverlay}>
                 <View style={styles.redDot} />
-                <Text style={styles.recordingText}>BALL DETECTED: RECORDING CLIP...</Text>
+                <Text style={styles.recordingText}>RECORDING CLIP...</Text>
               </View>
             )}
             
@@ -291,17 +335,16 @@ export default function LiveCameraScreen({ route, navigation }) {
               </View>
             )}
 
-            {/* FULLTRACK AI ON-DEVICE FRAME PROCESSOR TOGGLE */}
             {engineState === 'IDLE' && (
-              <TouchableOpacity 
-                style={[styles.triggerBtn, isAutoTracking && {backgroundColor: 'rgba(255,23,68,0.2)', borderColor: '#ff1744'}]} 
-                onPress={isAutoTracking ? stopAutoTracking : startAutoTracking}
-              >
-                <Target color={isAutoTracking ? "#ff1744" : "#00e676"} size={24} />
-                <Text style={[styles.triggerText, isAutoTracking && {color: '#ff1744'}]}>
-                  {isAutoTracking ? "AI TRACKING... (WAITING FOR BALL)" : "ENABLE ON-DEVICE ML TRACKING"}
-                </Text>
-              </TouchableOpacity>
+              <View style={styles.actionBottomBar}>
+                <TouchableOpacity style={styles.recordBtn} onPress={captureDelivery}>
+                  <View style={styles.recordBtnInner} />
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.settingsIconBtn} onPress={() => setShowSettings(true)}>
+                  <Target color="#fff" size={24} />
+                  <Text style={styles.settingsIconText}>{recordingDuration}s</Text>
+                </TouchableOpacity>
+              </View>
             )}
           </>
         )}
@@ -339,5 +382,23 @@ const styles = StyleSheet.create({
   scoreRow: { flexDirection: 'row', justifyContent: 'space-between' },
   scoreBox: { flex: 1, backgroundColor: '#222', marginHorizontal: 5, height: 50, justifyContent: 'center', alignItems: 'center', borderRadius: 10 },
   scoreBoxText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  wicketBox: { backgroundColor: '#ff1744' }
+  wicketBox: { backgroundColor: '#ff1744' },
+
+  actionBottomBar: { position: 'absolute', bottom: 40, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
+  recordBtn: { width: 80, height: 80, borderRadius: 40, borderWidth: 4, borderColor: '#fff', justifyContent: 'center', alignItems: 'center' },
+  recordBtnInner: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#ff1744' },
+  settingsIconBtn: { position: 'absolute', right: 40, alignItems: 'center' },
+  settingsIconText: { color: '#fff', marginTop: 5, fontWeight: 'bold' },
+  
+  modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', padding: 20 },
+  modalContent: { backgroundColor: '#1e1e1e', padding: 25, borderRadius: 20 },
+  modalTitle: { color: '#00e676', fontSize: 24, fontWeight: '900', textAlign: 'center', marginBottom: 20 },
+  settingsLabel: { color: '#fff', fontSize: 18, fontWeight: 'bold', textAlign: 'center' },
+  settingsSubtext: { color: '#aaa', textAlign: 'center', marginBottom: 20, fontSize: 12 },
+  stepperContainer: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 30 },
+  stepperBtn: { backgroundColor: '#333', width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
+  stepperBtnText: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
+  stepperValue: { color: '#00e676', fontSize: 32, fontWeight: '900', width: 100, textAlign: 'center' },
+  saveSettingsBtn: { backgroundColor: '#00e676', paddingVertical: 15, borderRadius: 10 },
+  saveSettingsText: { color: '#000', textAlign: 'center', fontWeight: '900', fontSize: 16 }
 });
