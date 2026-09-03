@@ -19,6 +19,22 @@
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow CricCoach to access your camera."
+        }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Allow CricCoach to access your camera for ball tracking.",
+          "enableCodeScanner": false
+        }
+      ],
+      "react-native-worklets-core"
+    ]
   }
 }

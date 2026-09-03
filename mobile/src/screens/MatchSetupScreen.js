@@ -1,155 +1,197 @@
 import React, { useState } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, TextInput, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
-import { ChevronRight, Plus, Trash2 } from 'lucide-react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, SafeAreaView, ScrollView, Alert } from 'react-native';
+import { Trophy, Plus, X } from 'lucide-react-native';
 
 export default function MatchSetupScreen({ navigation }) {
   const [teamA, setTeamA] = useState('Strikers');
-  const [teamB, setTeamB] = useState('Royals');
-  const [format, setFormat] = useState('T20'); // T20 | ODI | TEST
+  const [teamB, setTeamB] = useState('Spartans');
+  const [format, setFormat] = useState('T20');
+  const [overs, setOvers] = useState('20');
   
-  // Full Roster for Batting Team
-  const [roster, setRoster] = useState(['Batsman 1', 'Batsman 2', 'Batsman 3', 'Batsman 4', 'Batsman 5', 'Batsman 6']);
-  const [strikerIndex, setStrikerIndex] = useState(0);
-  const [nonStrikerIndex, setNonStrikerIndex] = useState(1);
+  const [teamARoster, setTeamARoster] = useState(['Player 1', 'Player 2', 'Player 3', 'Player 4', 'Player 5', 'Player 6']);
+  const [teamBRoster, setTeamBRoster] = useState(['Player 1', 'Player 2', 'Player 3', 'Player 4', 'Player 5', 'Player 6']);
+  const [newPlayerA, setNewPlayerA] = useState('');
+  const [newPlayerB, setNewPlayerB] = useState('');
 
-  const updatePlayer = (text, index) => {
-    let newRoster = [...roster];
-    newRoster[index] = text;
-    setRoster(newRoster);
+  // Toss
+  const [tossWinner, setTossWinner] = useState('Team A');
+  const [tossDecision, setTossDecision] = useState('BAT');
+
+  const battingTeamName = tossWinner === 'Team A' ? (tossDecision === 'BAT' ? teamA : teamB) : (tossDecision === 'BAT' ? teamB : teamA);
+  const bowlingTeamName = tossWinner === 'Team A' ? (tossDecision === 'BOWL' ? teamA : teamB) : (tossDecision === 'BOWL' ? teamB : teamA);
+  const battingRoster = battingTeamName === teamA ? teamARoster : teamBRoster;
+  const bowlingRoster = bowlingTeamName === teamA ? teamARoster : teamBRoster;
+
+  const [striker, setStriker] = useState('');
+  const [nonStriker, setNonStriker] = useState('');
+
+  const addPlayer = (team) => {
+    if (team === 'A' && newPlayerA.trim()) {
+      setTeamARoster([...teamARoster, newPlayerA.trim()]);
+      setNewPlayerA('');
+    } else if (team === 'B' && newPlayerB.trim()) {
+      setTeamBRoster([...teamBRoster, newPlayerB.trim()]);
+      setNewPlayerB('');
+    }
   };
 
-  const addPlayer = () => setRoster([...roster, `Batsman ${roster.length + 1}`]);
-  
-  const removePlayer = (index) => {
-    if (roster.length <= 2) return; // Need at least 2 players
-    let newRoster = roster.filter((_, i) => i !== index);
-    setRoster(newRoster);
-    if (strikerIndex >= newRoster.length) setStrikerIndex(0);
-    if (nonStrikerIndex >= newRoster.length) setNonStrikerIndex(1);
+  const removePlayer = (team, index) => {
+    if (team === 'A') setTeamARoster(teamARoster.filter((_, i) => i !== index));
+    if (team === 'B') setTeamBRoster(teamBRoster.filter((_, i) => i !== index));
   };
 
-  const startCalibration = () => {
-    navigation.navigate('LiveCamera', {
+  const handleStart = () => {
+    if (!striker || !nonStriker) return Alert.alert('Error', 'Please select both opening batsmen.');
+    if (striker === nonStriker) return Alert.alert('Error', 'Striker and Non-Striker must be different players.');
+    
+    navigation.navigate('LiveCamera', { 
       sessionType: 'MATCH',
-      matchDetails: {
-        teamA: teamA || 'Team A',
-        teamB: teamB || 'Team B',
-        format,
-        roster,
-        striker: roster[strikerIndex],
-        nonStriker: roster[nonStrikerIndex]
+      matchDetails: { 
+        teamA, teamB, format, overs: parseInt(overs) || 20,
+        battingTeamName, bowlingTeamName,
+        battingRoster, bowlingRoster,
+        striker, nonStriker 
       }
     });
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{flex: 1}}>
-        <ScrollView contentContainerStyle={styles.scroll}>
+      <ScrollView contentContainerStyle={styles.scroll}>
+        <Text style={styles.title}>Match Setup</Text>
+
+        <View style={styles.section}>
+          <Text style={styles.label}>Team A Name</Text>
+          <TextInput style={styles.input} value={teamA} onChangeText={setTeamA} placeholderTextColor="#555" />
           
-          <Text style={styles.headerTitle}>Match Setup</Text>
+          <Text style={styles.label}>Team B Name</Text>
+          <TextInput style={styles.input} value={teamB} onChangeText={setTeamB} placeholderTextColor="#555" />
+        </View>
 
-          {/* TEAMS */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Teams</Text>
-            <TextInput style={styles.input} placeholder="Batting Team" placeholderTextColor="#666" value={teamA} onChangeText={setTeamA} />
-            <TextInput style={styles.input} placeholder="Bowling Team" placeholderTextColor="#666" value={teamB} onChangeText={setTeamB} />
+        <View style={styles.sectionRow}>
+          <View style={{flex: 1, marginRight: 10}}>
+            <Text style={styles.label}>Format</Text>
+            <TextInput style={styles.input} value={format} onChangeText={setFormat} />
           </View>
-
-          {/* FORMAT */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Format</Text>
-            <View style={styles.formatRow}>
-              {['T20', 'ODI', 'TEST'].map(fmt => (
-                <TouchableOpacity key={fmt} style={[styles.formatBtn, format === fmt && styles.formatBtnActive]} onPress={() => setFormat(fmt)}>
-                  <Text style={[styles.formatText, format === fmt && styles.formatTextActive]}>{fmt}</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
+          <View style={{flex: 1, marginLeft: 10}}>
+            <Text style={styles.label}>Overs</Text>
+            <TextInput style={styles.input} value={overs} onChangeText={setOvers} keyboardType="numeric" />
           </View>
+        </View>
 
-          {/* BATTING ROSTER */}
-          <View style={styles.section}>
-            <View style={styles.rosterHeader}>
-              <Text style={styles.sectionTitle}>Batting Lineup ({teamA})</Text>
-              <TouchableOpacity onPress={addPlayer} style={styles.addBtn}><Plus color="#00e676" size={20}/></TouchableOpacity>
-            </View>
-            
-            {roster.map((player, index) => (
-              <View key={index} style={styles.playerRow}>
-                <Text style={styles.playerNum}>{index + 1}.</Text>
-                <TextInput style={styles.playerInput} value={player} onChangeText={(t) => updatePlayer(t, index)} placeholder={`Player ${index + 1}`} placeholderTextColor="#555" />
-                <TouchableOpacity onPress={() => removePlayer(index)}><Trash2 color="#ff1744" size={20}/></TouchableOpacity>
+        <View style={styles.section}>
+          <Text style={styles.label}>The Toss</Text>
+          <View style={styles.tossRow}>
+            <TouchableOpacity style={[styles.tossBtn, tossWinner === 'Team A' && styles.tossActive]} onPress={() => setTossWinner('Team A')}>
+              <Text style={styles.tossText}>{teamA} Won</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.tossBtn, tossWinner === 'Team B' && styles.tossActive]} onPress={() => setTossWinner('Team B')}>
+              <Text style={styles.tossText}>{teamB} Won</Text>
+            </TouchableOpacity>
+          </View>
+          <View style={styles.tossRow}>
+            <TouchableOpacity style={[styles.tossBtn, tossDecision === 'BAT' && styles.tossActive]} onPress={() => setTossDecision('BAT')}>
+              <Text style={styles.tossText}>Bat First</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.tossBtn, tossDecision === 'BOWL' && styles.tossActive]} onPress={() => setTossDecision('BOWL')}>
+              <Text style={styles.tossText}>Bowl First</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.tossResultText}>🏏 {battingTeamName} is batting first.</Text>
+        </View>
+
+        {/* Team A Roster */}
+        <View style={styles.section}>
+          <Text style={styles.label}>{teamA} Roster ({teamARoster.length})</Text>
+          <View style={styles.addPlayerRow}>
+            <TextInput style={styles.addPlayerInput} value={newPlayerA} onChangeText={setNewPlayerA} placeholder="Add Player..." placeholderTextColor="#666" />
+            <TouchableOpacity style={styles.addBtn} onPress={() => addPlayer('A')}><Plus color="#000" size={20} /></TouchableOpacity>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.rosterScroll}>
+            {teamARoster.map((p, i) => (
+              <View key={i} style={styles.playerChip}>
+                <Text style={styles.playerChipText}>{p}</Text>
+                <TouchableOpacity onPress={() => removePlayer('A', i)}><X color="#ff1744" size={16}/></TouchableOpacity>
               </View>
             ))}
-          </View>
-
-          {/* OPENERS SELECTION */}
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Select Openers</Text>
-            
-            <Text style={styles.label}>Striker</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.openerScroll}>
-              {roster.map((player, idx) => (
-                <TouchableOpacity key={`s-${idx}`} style={[styles.pill, strikerIndex === idx && styles.pillActive]} onPress={() => { setStrikerIndex(idx); if(nonStrikerIndex === idx) setNonStrikerIndex((idx + 1) % roster.length); }}>
-                  <Text style={[styles.pillText, strikerIndex === idx && styles.pillTextActive]}>{player}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-
-            <Text style={[styles.label, {marginTop: 15}]}>Non-Striker</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.openerScroll}>
-              {roster.map((player, idx) => (
-                <TouchableOpacity key={`ns-${idx}`} style={[styles.pill, nonStrikerIndex === idx && styles.pillActive]} onPress={() => { setNonStrikerIndex(idx); if(strikerIndex === idx) setStrikerIndex((idx + 1) % roster.length); }}>
-                  <Text style={[styles.pillText, nonStrikerIndex === idx && styles.pillTextActive]}>{player}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-
-        </ScrollView>
-
-        <View style={styles.footer}>
-          <TouchableOpacity style={styles.startBtn} onPress={startCalibration}>
-            <Text style={styles.startBtnText}>Proceed to Match</Text>
-            <ChevronRight color="#000" size={24} />
-          </TouchableOpacity>
+          </ScrollView>
         </View>
-      </KeyboardAvoidingView>
+
+        {/* Team B Roster */}
+        <View style={styles.section}>
+          <Text style={styles.label}>{teamB} Roster ({teamBRoster.length})</Text>
+          <View style={styles.addPlayerRow}>
+            <TextInput style={styles.addPlayerInput} value={newPlayerB} onChangeText={setNewPlayerB} placeholder="Add Player..." placeholderTextColor="#666" />
+            <TouchableOpacity style={styles.addBtn} onPress={() => addPlayer('B')}><Plus color="#000" size={20} /></TouchableOpacity>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.rosterScroll}>
+            {teamBRoster.map((p, i) => (
+              <View key={i} style={styles.playerChip}>
+                <Text style={styles.playerChipText}>{p}</Text>
+                <TouchableOpacity onPress={() => removePlayer('B', i)}><X color="#ff1744" size={16}/></TouchableOpacity>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.label}>Select Opening Batsmen</Text>
+          <Text style={styles.subLabel}>Striker</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 15}}>
+            {battingRoster.map((p, i) => (
+              <TouchableOpacity key={i} style={[styles.selectPill, striker === p && styles.activePill]} onPress={() => setStriker(p)}>
+                <Text style={styles.selectPillText}>{p}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <Text style={styles.subLabel}>Non-Striker</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+            {battingRoster.map((p, i) => (
+              <TouchableOpacity key={i} style={[styles.selectPill, nonStriker === p && styles.activePill]} onPress={() => setNonStriker(p)}>
+                <Text style={styles.selectPillText}>{p}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+
+        <TouchableOpacity style={styles.startBtn} onPress={handleStart}>
+          <Text style={styles.startBtnText}>START MATCH</Text>
+        </TouchableOpacity>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000' },
-  scroll: { padding: 24, paddingBottom: 100 },
-  headerTitle: { color: '#fff', fontSize: 32, fontWeight: 'bold', marginBottom: 30, marginTop: 20 },
+  container: { flex: 1, backgroundColor: '#0a0a0a' },
+  scroll: { padding: 20, paddingTop: 40, paddingBottom: 100 },
+  title: { fontSize: 32, fontWeight: '900', color: '#fff', marginBottom: 20 },
   
-  section: { marginBottom: 30 },
-  sectionTitle: { color: '#00e676', fontSize: 14, fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 15 },
-  label: { color: '#888', fontSize: 12, fontWeight: 'bold', textTransform: 'uppercase', marginBottom: 10 },
+  section: { backgroundColor: '#121212', padding: 20, borderRadius: 16, marginBottom: 20, borderWidth: 1, borderColor: '#222' },
+  sectionRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
   
-  input: { backgroundColor: '#121212', color: '#fff', padding: 18, borderRadius: 12, marginBottom: 12, fontSize: 16, borderWidth: 1, borderColor: '#222' },
+  label: { color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 10 },
+  subLabel: { color: '#888', fontSize: 14, marginBottom: 5 },
+  input: { backgroundColor: '#1a1a1a', color: '#fff', padding: 15, borderRadius: 10, borderWidth: 1, borderColor: '#333', marginBottom: 15 },
   
-  formatRow: { flexDirection: 'row', justifyContent: 'space-between' },
-  formatBtn: { flex: 1, backgroundColor: '#121212', paddingVertical: 15, alignItems: 'center', borderRadius: 10, marginHorizontal: 5, borderWidth: 1, borderColor: '#222' },
-  formatBtnActive: { backgroundColor: 'rgba(0, 230, 118, 0.2)', borderColor: '#00e676' },
-  formatText: { color: '#888', fontWeight: 'bold', fontSize: 16 },
-  formatTextActive: { color: '#00e676' },
+  tossRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
+  tossBtn: { flex: 1, backgroundColor: '#1a1a1a', padding: 15, borderRadius: 10, borderWidth: 1, borderColor: '#333', alignItems: 'center', marginHorizontal: 5 },
+  tossActive: { backgroundColor: 'rgba(0, 230, 118, 0.2)', borderColor: '#00e676' },
+  tossText: { color: '#fff', fontWeight: 'bold' },
+  tossResultText: { color: '#00e676', textAlign: 'center', marginTop: 10, fontWeight: 'bold', fontSize: 16 },
 
-  rosterHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  addBtn: { backgroundColor: 'rgba(0, 230, 118, 0.1)', padding: 8, borderRadius: 8, borderWidth: 1, borderColor: '#00e676' },
-  playerRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#121212', borderRadius: 10, paddingHorizontal: 15, marginBottom: 10, borderWidth: 1, borderColor: '#222' },
-  playerNum: { color: '#888', fontWeight: 'bold', width: 25 },
-  playerInput: { flex: 1, color: '#fff', paddingVertical: 15, fontSize: 16 },
+  addPlayerRow: { flexDirection: 'row', marginBottom: 15 },
+  addPlayerInput: { flex: 1, backgroundColor: '#1a1a1a', color: '#fff', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#333' },
+  addBtn: { backgroundColor: '#00e676', padding: 12, borderRadius: 10, marginLeft: 10, justifyContent: 'center' },
   
-  openerScroll: { flexDirection: 'row' },
-  pill: { backgroundColor: '#121212', paddingHorizontal: 20, paddingVertical: 12, borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#222' },
-  pillActive: { backgroundColor: '#00e676', borderColor: '#00e676' },
-  pillText: { color: '#888', fontWeight: 'bold' },
-  pillTextActive: { color: '#000' },
+  rosterScroll: { paddingBottom: 10 },
+  playerChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#222', paddingVertical: 8, paddingHorizontal: 15, borderRadius: 20, marginRight: 10 },
+  playerChipText: { color: '#fff', marginRight: 10 },
 
-  footer: { position: 'absolute', bottom: 0, width: '100%', padding: 24, backgroundColor: '#000', borderTopWidth: 1, borderTopColor: '#222' },
-  startBtn: { flexDirection: 'row', backgroundColor: '#00e676', paddingVertical: 18, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
-  startBtnText: { color: '#000', fontSize: 18, fontWeight: 'bold', marginRight: 10 }
+  selectPill: { backgroundColor: '#222', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#333' },
+  activePill: { backgroundColor: '#00e676', borderColor: '#00e676' },
+  selectPillText: { color: '#fff', fontWeight: 'bold' },
+
+  startBtn: { backgroundColor: '#00e676', padding: 20, borderRadius: 15, alignItems: 'center', marginTop: 10 },
+  startBtnText: { color: '#000', fontSize: 18, fontWeight: '900', letterSpacing: 1 }
 });

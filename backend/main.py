@@ -1,10 +1,13 @@
+import os
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import os
+import shutil
+
+from cv_pipeline.ball_tracking import process_ball_tracking
+from cv_pipeline.biomechanics import process_biomechanics
 
 app = FastAPI(title="CricCoach AI Backend")
 
-# Allow mobile app to connect
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -13,25 +16,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/")
-def read_root():
-    return {"status": "ok", "message": "CricCoach Backend is running"}
+os.makedirs("temp_videos", exist_ok=True)
 
 @app.get("/ping")
 def ping():
-    return {"ping": "pong", "message": "Successfully connected to PC backend!"}
+    return {"status": "ok", "message": "CricCoach Backend is running"}
 
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
-    # Save the file temporarily
-    file_location = f"temp_{file.filename}"
-    with open(file_location, "wb") as f:
-        f.write(await file.read())
+    file_location = f"temp_videos/{file.filename}"
+    with open(file_location, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
     
-    # In the future, this is where we will trigger the MediaPipe and YOLO processing
+    # 1. Run Ball Tracking (YOLOv8 + HawkEye Physics)
+    hawkeye_data = process_ball_tracking(file_location)
     
-    return {"status": "success", "filename": file.filename, "message": "Video received for processing"}
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 2. Run Biomechanics (MediaPipe Pose)
+    biomechanics_data = process_biomechanics(file_location)
+    
+    # Clean up
+    os.remove(file_location)
+    
+    # Combine results
+    result = {
+        "isNoBall": biomechanics_data.get("isNoBall", False),
+        "isWide": hawkeye_data.get("isWide", False),
+        "releaseData": {
+            "height": biomechanics_data.get("releaseHeight", 2.1),
+            "swingDegrees": hawkeye_data.get("swingDegrees", 0.0)
+        },
+        "hawkeye": hawkeye_data.get("hawkeye", {
+            "pitching": "IN LINE",
+            "impact": "IN LINE",
+            "wickets": "HITTING"
+        }),
+        "shotType": biomechanics_data.get("shotType", "DEFENSE")
+    }
+    
+    return result

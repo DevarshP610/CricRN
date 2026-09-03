@@ -8,6 +8,7 @@ import HomeScreen from '../screens/HomeScreen';
 import MatchSetupScreen from '../screens/MatchSetupScreen';
 import LiveCameraScreen from '../screens/LiveCameraScreen';
 import SessionsScreen from '../screens/SessionsScreen';
+import AnalysisScreen from '../screens/AnalysisScreen';
 import AICoachScreen from '../screens/AICoachScreen';
 
 const Tab = createBottomTabNavigator();
@@ -31,6 +32,15 @@ function PlayStack() {
       <Stack.Screen name="Home" component={HomeScreen} />
       <Stack.Screen name="MatchSetup" component={MatchSetupScreen} />
       <Stack.Screen name="LiveCamera" component={LiveCameraScreen} />
+    </Stack.Navigator>
+  );
+}
+
+function SessionsStack() {
+  return (
+    <Stack.Navigator screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="SessionsMain" component={SessionsScreen} />
+      <Stack.Screen name="Analysis" component={AnalysisScreen} />
     </Stack.Navigator>
   );
 }
@@ -64,7 +74,7 @@ export default function AppNavigator() {
         })}
       >
         <Tab.Screen name="Play" component={PlayStack} />
-        <Tab.Screen name="Sessions" component={SessionsScreen} />
+        <Tab.Screen name="Sessions" component={SessionsStack} />
         <Tab.Screen name="AI Coach" component={AICoachScreen} />
       </Tab.Navigator>
     </NavigationContainer>
