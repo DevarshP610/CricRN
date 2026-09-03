@@ -112,7 +112,7 @@ export default function LiveCameraScreen({ route, navigation }) {
     }
   };
 
-  const captureDelivery = async () => {
+  const startRecording = async () => {
     if (!cameraRef.current) return;
     setEngineState('RECORDING_CLIP');
     setShowTrail(false);
@@ -136,19 +136,23 @@ export default function LiveCameraScreen({ route, navigation }) {
           setEngineState('IDLE');
         }
       });
-      
-      // FullTrack AI stops recording 3 seconds after release
-      setTimeout(async () => {
-        if (cameraRef.current) {
-          await cameraRef.current.stopRecording();
-        }
-      }, recordingDuration * 1000);
-      
     } catch (error) {
       console.log('Error triggering recording:', error);
       setEngineState('IDLE');
     }
   };
+
+  const stopRecording = async () => {
+    if (cameraRef.current && engineState === 'RECORDING_CLIP') {
+      try {
+        await cameraRef.current.stopRecording();
+      } catch (e) {
+        console.log(e);
+      }
+    }
+  };
+
+  const [showSpeedFlash, setShowSpeedFlash] = useState(false);
 
   const handleBackendResponse = (aiData) => {
     if (aiData.hawkeye) {
@@ -157,6 +161,8 @@ export default function LiveCameraScreen({ route, navigation }) {
         swing: aiData.hawkeye.swing || '1.2',
         turn: aiData.hawkeye.turn || '0.5'
       });
+      setShowSpeedFlash(true);
+      setTimeout(() => setShowSpeedFlash(false), 2000);
     }
 
     if (aiData.isNoBall) {
@@ -262,7 +268,47 @@ export default function LiveCameraScreen({ route, navigation }) {
         </View>
       </Modal>
       
-      {/* DRS MODAL OMITTED FOR BREVITY BUT WORKS SAME WAY */}
+      {/* DRS MODAL */}
+      <Modal visible={showDRSModal} transparent={true} animationType="fade">
+        <View style={styles.drsBg}>
+          <View style={styles.drsContent}>
+            <Text style={styles.drsTitle}>BALL TRACKING</Text>
+            
+            <View style={styles.drsVisual}>
+              <Svg height="150" width="100%" viewBox="0 0 100 100">
+                <Rect x="30" y="10" width="40" height="80" fill="#d2b48c" />
+                <Rect x="46" y="70" width="2" height="15" fill="#fff" />
+                <Rect x="49" y="70" width="2" height="15" fill="#fff" />
+                <Rect x="52" y="70" width="2" height="15" fill="#fff" />
+                
+                {drsStep >= 1 && <Circle cx="40" cy="50" r="4" fill="#ffea00" />}
+                {drsStep >= 2 && <Circle cx="48" cy="70" r="4" fill="#ffea00" />}
+                {drsStep >= 2 && <Line x1="40" y1="50" x2="48" y2="70" stroke="#ffea00" strokeWidth="2" strokeDasharray="4" />}
+                {drsStep >= 3 && <Line x1="48" y1="70" x2="55" y2="90" stroke="#ffea00" strokeWidth="2" strokeDasharray="4" />}
+              </Svg>
+            </View>
+
+            <View style={styles.drsMetricsRow}>
+              <Text style={styles.drsMetricLabel}>PITCHING</Text>
+              {drsStep >= 1 ? <Text style={[styles.drsMetricValue, {color: '#00e676'}]}>IN LINE</Text> : <Text style={styles.drsMetricPending}>Checking...</Text>}
+            </View>
+            <View style={styles.drsMetricsRow}>
+              <Text style={styles.drsMetricLabel}>IMPACT</Text>
+              {drsStep >= 2 ? <Text style={[styles.drsMetricValue, {color: '#00e676'}]}>IN LINE</Text> : <Text style={styles.drsMetricPending}>Checking...</Text>}
+            </View>
+            <View style={styles.drsMetricsRow}>
+              <Text style={styles.drsMetricLabel}>WICKETS</Text>
+              {drsStep >= 3 ? <Text style={[styles.drsMetricValue, {color: '#ff1744'}]}>HITTING</Text> : <Text style={styles.drsMetricPending}>Checking...</Text>}
+            </View>
+
+            {drsStep >= 3 && (
+              <TouchableOpacity style={styles.drsCloseBtn} onPress={() => setShowDRSModal(false)}>
+                <Text style={styles.drsCloseText}>DECISION: OUT</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </Modal>
       
       <View style={StyleSheet.absoluteFillObject} onTouchEnd={handleTap}>
         <Camera 
@@ -294,6 +340,13 @@ export default function LiveCameraScreen({ route, navigation }) {
         {/* CALIBRATION MARKERS */}
         {strikerStumps.map((coord, index) => <View key={`s-${index}`} style={[styles.marker, styles.strikerMarker, { left: coord.x - 6, top: coord.y - 6 }]} />)}
         {nonStrikerStumps.map((coord, index) => <View key={`ns-${index}`} style={[styles.marker, styles.nonStrikerMarker, { left: coord.x - 8, top: coord.y - 8 }]} />)}
+
+        {/* SPEED FLASH OVERLAY */}
+        {showSpeedFlash && recentStats && (
+          <View style={styles.speedFlashOverlay}>
+            <Text style={styles.speedFlashText}>{recentStats.speed} <Text style={{fontSize: 32}}>km/h</Text></Text>
+          </View>
+        )}
 
         {/* UMPIRE AI NO-BALL OVERLAY */}
         {isNoBall && (
@@ -360,14 +413,29 @@ export default function LiveCameraScreen({ route, navigation }) {
                   <TouchableOpacity style={[styles.scoreBox, styles.wicketBox]} onPress={() => handleScore(0, 'WICKET')}>
                     <Text style={styles.scoreBoxText}>W</Text>
                   </TouchableOpacity>
+                  <TouchableOpacity style={[styles.scoreBox, {backgroundColor: '#2979ff'}]} onPress={() => {
+                    setShowDRSModal(true);
+                    setDrsStep(0);
+                    setTimeout(() => setDrsStep(1), 1000);
+                    setTimeout(() => setDrsStep(2), 2500);
+                    setTimeout(() => setDrsStep(3), 4000);
+                  }}>
+                    <Text style={[styles.scoreBoxText, {fontSize: 14}]}>DRS</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
             )}
 
             {engineState === 'RECORDING_CLIP' && (
-              <View style={styles.recordingOverlay}>
-                <View style={styles.redDot} />
-                <Text style={styles.recordingText}>RECORDING CLIP...</Text>
+              <View style={styles.actionBottomBar}>
+                <View style={styles.recordingOverlayFloating}>
+                  <View style={styles.redDot} />
+                  <Text style={styles.recordingText}>RECORDING...</Text>
+                </View>
+                <TouchableOpacity style={styles.stopBtn} onPress={stopRecording}>
+                  <View style={styles.stopBtnInner} />
+                  <Text style={styles.stopBtnText}>BALL DEAD (STOP)</Text>
+                </TouchableOpacity>
               </View>
             )}
             
@@ -379,12 +447,9 @@ export default function LiveCameraScreen({ route, navigation }) {
 
             {engineState === 'IDLE' && (
               <View style={styles.actionBottomBar}>
-                <TouchableOpacity style={styles.recordBtn} onPress={captureDelivery}>
+                <TouchableOpacity style={styles.recordBtn} onPress={startRecording}>
                   <View style={styles.recordBtnInner} />
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.settingsIconBtn} onPress={() => setShowSettings(true)}>
-                  <Target color="#fff" size={24} />
-                  <Text style={styles.settingsIconText}>{recordingDuration}s</Text>
+                  <Text style={styles.recordBtnText}>START RUN-UP</Text>
                 </TouchableOpacity>
               </View>
             )}
@@ -406,9 +471,12 @@ const styles = StyleSheet.create({
   nonStrikerMarker: { backgroundColor: '#ff1744' },
   
   noBallOverlay: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', alignItems: 'center' },
-  noBallText: { color: '#ff1744', fontSize: 64, fontWeight: '900', marginTop: 20 },
+  noBallText: { color: '#ff1744', fontSize: 48, fontWeight: '900', marginTop: 10, letterSpacing: 3 },
   
-  scoreboardContainer: { position: 'absolute', top: 40, left: 20, right: 20, backgroundColor: 'rgba(0,0,0,0.85)', padding: 15, borderRadius: 15 },
+  speedFlashOverlay: { position: 'absolute', top: '35%', alignSelf: 'center', backgroundColor: 'rgba(0, 230, 118, 0.9)', paddingVertical: 20, paddingHorizontal: 40, borderRadius: 20, borderWidth: 4, borderColor: '#fff', elevation: 20 },
+  speedFlashText: { color: '#000', fontSize: 72, fontWeight: '900', fontStyle: 'italic', textAlign: 'center' },
+  
+  scoreboardContainer: { position: 'absolute', top: 50, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.85)', paddingVertical: 10, paddingHorizontal: 30, borderRadius: 30, borderWidth: 1, borderColor: '#444' },
   scoreTopRow: { flexDirection: 'row', alignItems: 'center' },
   mainScore: { color: '#fff', fontSize: 36, fontWeight: '900' },
   overs: { color: '#888', fontSize: 18, marginLeft: 10, fontWeight: 'bold' },
@@ -426,11 +494,16 @@ const styles = StyleSheet.create({
   scoreBoxText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   wicketBox: { backgroundColor: '#ff1744' },
 
-  actionBottomBar: { position: 'absolute', bottom: 40, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'center' },
-  recordBtn: { width: 80, height: 80, borderRadius: 40, borderWidth: 4, borderColor: '#fff', justifyContent: 'center', alignItems: 'center' },
-  recordBtnInner: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#ff1744' },
-  settingsIconBtn: { position: 'absolute', right: 40, alignItems: 'center' },
-  settingsIconText: { color: '#fff', marginTop: 5, fontWeight: 'bold' },
+  actionBottomBar: { position: 'absolute', bottom: 40, left: 0, right: 0, flexDirection: 'column', justifyContent: 'center', alignItems: 'center' },
+  recordBtn: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.6)', paddingRight: 25, borderRadius: 40, borderWidth: 2, borderColor: '#fff', alignItems: 'center' },
+  recordBtnInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#ff1744', margin: 5 },
+  recordBtnText: { color: '#fff', fontWeight: '900', fontSize: 18, marginLeft: 15 },
+  
+  stopBtn: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.8)', paddingRight: 25, borderRadius: 15, borderWidth: 2, borderColor: '#ff1744', alignItems: 'center', marginTop: 15 },
+  stopBtnInner: { width: 40, height: 40, borderRadius: 5, backgroundColor: '#ff1744', margin: 10 },
+  stopBtnText: { color: '#ff1744', fontWeight: '900', fontSize: 18, marginLeft: 10 },
+  
+  recordingOverlayFloating: { flexDirection: 'row', backgroundColor: 'rgba(255, 23, 68, 0.9)', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20, alignItems: 'center' },
   
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#1e1e1e', padding: 25, borderRadius: 20 },
@@ -443,6 +516,17 @@ const styles = StyleSheet.create({
   stepperValue: { color: '#00e676', fontSize: 32, fontWeight: '900', width: 100, textAlign: 'center' },
   saveSettingsBtn: { backgroundColor: '#00e676', paddingVertical: 15, borderRadius: 10 },
   saveSettingsText: { color: '#000', textAlign: 'center', fontWeight: '900', fontSize: 16 },
+
+  drsBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', padding: 20 },
+  drsContent: { backgroundColor: '#111', padding: 25, borderRadius: 20, borderWidth: 2, borderColor: '#333' },
+  drsTitle: { color: '#2979ff', fontSize: 24, fontWeight: '900', textAlign: 'center', letterSpacing: 2, marginBottom: 20 },
+  drsVisual: { backgroundColor: '#222', borderRadius: 15, padding: 10, marginBottom: 20 },
+  drsMetricsRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#222' },
+  drsMetricLabel: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  drsMetricValue: { fontSize: 18, fontWeight: '900' },
+  drsMetricPending: { color: '#666', fontSize: 18, fontStyle: 'italic' },
+  drsCloseBtn: { backgroundColor: '#ff1744', marginTop: 25, paddingVertical: 15, borderRadius: 10 },
+  drsCloseText: { color: '#fff', textAlign: 'center', fontWeight: '900', fontSize: 18, letterSpacing: 1 },
 
   endMatchBtn: { position: 'absolute', top: 50, left: 20, backgroundColor: 'rgba(255, 23, 68, 0.8)', flexDirection: 'row', paddingVertical: 10, paddingHorizontal: 15, borderRadius: 20, alignItems: 'center' },
   endMatchText: { color: '#fff', fontWeight: 'bold', marginLeft: 8 },

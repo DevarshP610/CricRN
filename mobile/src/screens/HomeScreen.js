@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, Dimensions, ImageBackground } from 'react-native';
-import { Play, Calendar, Trophy, Clock } from 'lucide-react-native';
+import { Play, Calendar, Trophy, Clock, User } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
 
@@ -33,8 +33,13 @@ export default function HomeScreen({ navigation }) {
       <StatusBar barStyle="light-content" />
       
       <View style={styles.header}>
-        <Text style={styles.greeting}>Welcome Back,</Text>
-        <Text style={styles.coachName}>Coach Devarsh</Text>
+        <View>
+          <Text style={styles.greeting}>Welcome Back,</Text>
+          <Text style={styles.coachName}>Coach Devarsh</Text>
+        </View>
+        <TouchableOpacity style={styles.profileBtn} onPress={() => navigation.navigate('PlayerProfile')}>
+          <User color="#000" size={24} />
+        </TouchableOpacity>
       </View>
 
       <View style={styles.content}>
@@ -111,9 +116,10 @@ export default function HomeScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#121212' },
-  header: { padding: 24, paddingTop: 40, borderBottomWidth: 1, borderBottomColor: '#222' },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, paddingTop: 40, borderBottomWidth: 1, borderBottomColor: '#222' },
   greeting: { fontSize: 16, color: '#888', letterSpacing: 1 },
   coachName: { fontSize: 32, fontWeight: 'bold', color: '#fff', marginTop: 4 },
+  profileBtn: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#00e676', justifyContent: 'center', alignItems: 'center' },
   
   content: { flex: 1, padding: 24 },
   
