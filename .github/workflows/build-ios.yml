@@ -37,17 +37,17 @@ jobs:
       - name: Build Unsigned App
         working-directory: mobile/ios
         run: |
-          xcodebuild -workspace mobile.xcworkspace -scheme mobile -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          xcodebuild -workspace CricRN.xcworkspace -scheme CricRN -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
 
       - name: Package into IPA
         working-directory: mobile/ios
         run: |
           mkdir Payload
-          cp -r build/Build/Products/Release-iphoneos/mobile.app Payload/
-          zip -r CricCoach.ipa Payload
+          cp -r build/Build/Products/Release-iphoneos/CricRN.app Payload/
+          zip -r CricRN.ipa Payload
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CricCoach-IPA
-          path: mobile/ios/CricCoach.ipa
+          name: CricRN-IPA
+          path: mobile/ios/CricRN.ipa
