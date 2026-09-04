@@ -16,7 +16,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from fastapi.staticfiles import StaticFiles
+
 os.makedirs("temp_videos", exist_ok=True)
+app.mount("/videos", StaticFiles(directory="temp_videos"), name="videos")
 
 @app.get("/ping")
 def ping():
@@ -73,23 +76,58 @@ def get_matches(db: Session = Depends(get_db)):
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 
+import base64
+import cv2
+import numpy as np
+import json
+
 @app.websocket("/ws/live-stream")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     print("Phone connected to AI Live Stream!")
-    frame_count = 0
+    
+    backSub = cv2.createBackgroundSubtractorMOG2(history=10, varThreshold=50, detectShadows=False)
+    frames_since_motion = 0
+    motion_detected = False
+
     try:
         while True:
             # Receive base64 frame from the phone
-            data = await websocket.receive_text()
-            frame_count += 1
-            
-            # TODO: In Phase 3, run YOLOv8 on this frame!
-            # For now, simulate the AI detecting the ball going "dead" after 25 frames (approx 5-6 seconds)
-            if frame_count >= 25:
-                print("AI DETECTED BALL IS DEAD! Sending STOP signal.")
-                await websocket.send_json({"action": "STOP_RECORDING"})
-                frame_count = 0 # reset for next ball
+            text_data = await websocket.receive_text()
+            try:
+                data = json.loads(text_data)
+                if data.get("type") == "frame":
+                    base64_img = data.get("data")
+                    img_data = base64.b64decode(base64_img)
+                    np_arr = np.frombuffer(img_data, np.uint8)
+                    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    
+                    if frame is not None:
+                        # OpenCV Motion Detection for Auto-Stop
+                        fgMask = backSub.apply(frame)
+                        contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        
+                        has_motion = False
+                        for contour in contours:
+                            if cv2.contourArea(contour) > 100:  # Adjust threshold based on testing
+                                has_motion = True
+                                break
+                                
+                        if has_motion:
+                            motion_detected = True
+                            frames_since_motion = 0
+                        elif motion_detected:
+                            frames_since_motion += 1
+                            
+                        # If motion was detected but stopped for 3 frames (ball is dead/hit)
+                        if motion_detected and frames_since_motion > 3:
+                            print("AI DETECTED BALL IS DEAD! Sending STOP signal.")
+                            await websocket.send_json({"action": "STOP_RECORDING"})
+                            # Reset for next ball
+                            motion_detected = False
+                            frames_since_motion = 0
+            except Exception as e:
+                print("Error processing frame: ", e)
     except WebSocketDisconnect:
         print("Phone disconnected from AI Live Stream.")
 

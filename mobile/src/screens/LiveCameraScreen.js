@@ -4,6 +4,8 @@ import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import { Check, Target, LogOut, AlertTriangle, X, Trophy } from 'lucide-react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, Line } from 'react-native-svg';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as FileSystem from 'expo-file-system';
+import { Video } from 'expo-av';
 
 const { width, height } = Dimensions.get('window');
 
@@ -40,7 +42,8 @@ export default function LiveCameraScreen({ route, navigation }) {
   const [strikerStumps, setStrikerStumps] = useState([]);
   const [nonStrikerStumps, setNonStrikerStumps] = useState([]);
   
-  // Match Engine
+  const [matchHistory, setMatchHistory] = useState(route?.params?.matchHistory || []);
+
   const [score, setScore] = useState(route?.params?.score || { runs: 0, wickets: 0, balls: 0, extras: 0 });
   const [engineState, setEngineState] = useState('IDLE'); 
   const [showTrail, setShowTrail] = useState(false);
@@ -50,6 +53,7 @@ export default function LiveCameraScreen({ route, navigation }) {
   const [isNoBall, setIsNoBall] = useState(false);
   const [isFreeHit, setIsFreeHit] = useState(false);
   const [showDRSModal, setShowDRSModal] = useState(false);
+  const [showReplayModal, setShowReplayModal] = useState(false);
   const [drsStep, setDrsStep] = useState(0); 
 
   const [hasPermission, setHasPermission] = useState(false);
@@ -128,14 +132,20 @@ export default function LiveCameraScreen({ route, navigation }) {
     }, 8000);
     
     wsRef.current.onopen = () => {
-      // Stream live frames to Python AI
-      const streamInterval = setInterval(() => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send('base64_frame');
+      // Stream REAL live frames to Python AI
+      const streamInterval = setInterval(async () => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && cameraRef.current) {
+          try {
+            const photo = await cameraRef.current.takePhoto({ qualityPrioritization: 'speed' });
+            const base64 = await FileSystem.readAsStringAsync(photo.path, { encoding: FileSystem.EncodingType.Base64 });
+            wsRef.current.send(JSON.stringify({ type: 'frame', data: base64 }));
+          } catch (e) {
+            console.log("Snapshot failed: ", e);
+          }
         } else {
           clearInterval(streamInterval);
         }
-      }, 200); // 5 FPS
+      }, 500); // 2 FPS to save bandwidth
       wsRef.current.streamInterval = streamInterval;
     };
 
@@ -202,9 +212,10 @@ export default function LiveCameraScreen({ route, navigation }) {
   const handleBackendResponse = (aiData) => {
     if (aiData.hawkeye) {
       setRecentStats({
-        speed: aiData.hawkeye.speed || '85.2',
-        swing: aiData.hawkeye.swing || '1.2',
-        turn: aiData.hawkeye.turn || '0.5'
+        speed: aiData.speed || '85.2',
+        swing: aiData.swing || '1.2',
+        turn: aiData.turn || '0.5',
+        videoUrl: aiData.videoUrl
       });
       setShowSpeedFlash(true);
       setTimeout(() => setShowSpeedFlash(false), 2000);
@@ -272,6 +283,23 @@ export default function LiveCameraScreen({ route, navigation }) {
     if (newScore.balls > 0 && newScore.balls % 6 === 0) setActiveStriker(activeStriker === 1 ? 2 : 1);
     
     setScore(newScore);
+
+    // Save the actual ball to matchHistory
+    setMatchHistory(prev => [...prev, {
+      inning: innings,
+      over_number: Math.floor((newScore.balls - 1) / 6),
+      ball_number: ((newScore.balls - 1) % 6) + 1,
+      bowler: bowlingTeam, // Dummy bowler
+      batsman: activeStriker === 1 ? strikerName : nonStrikerName,
+      speed: recentStats?.speed || 135.0,
+      swing: recentStats?.swing || 0.0,
+      turn: recentStats?.turn || 0.0,
+      pitching: recentStats?.hawkeye?.pitching || "IN LINE",
+      impact: recentStats?.hawkeye?.impact || "IN LINE",
+      wickets: recentStats?.hawkeye?.wickets || "MISSING",
+      runs: runs,
+      is_wicket: isWicket ? "Yes" : "No"
+    }]);
     if (checkInningsOver(newScore)) return;
 
     if (isWicket) {
@@ -361,6 +389,7 @@ export default function LiveCameraScreen({ route, navigation }) {
           device={device} 
           isActive={true} 
           video={true}
+          photo={true}
           ref={cameraRef} 
         />
         
@@ -409,7 +438,7 @@ export default function LiveCameraScreen({ route, navigation }) {
                 {text: 'Cancel', style: 'cancel'},
                 {text: 'End', style: 'destructive', onPress: () => {
                   AsyncStorage.removeItem('saved_matches');
-                  navigation.replace('PostMatchAnalysis'); 
+                  navigation.replace('PostMatchAnalysis', { matchDetails, score, matchHistory }); 
                 }}
               ]);
             }}>
@@ -433,8 +462,44 @@ export default function LiveCameraScreen({ route, navigation }) {
                   <Text style={styles.statLineLabel}>Turn:</Text>
                   <Text style={styles.statLineValue}>{recentStats.turn}°</Text>
                 </View>
+                <TouchableOpacity style={styles.drsWidgetBtn} onPress={() => {
+                  setShowDRSModal(true);
+                  setDrsStep(0);
+                  setTimeout(() => setDrsStep(1), 1000);
+                  setTimeout(() => setDrsStep(2), 2500);
+                  setTimeout(() => setDrsStep(3), 4000);
+                }}>
+                  <Target color="#fff" size={16} />
+                  <Text style={styles.drsWidgetBtnText}>DRS REVIEW</Text>
+                </TouchableOpacity>
+                {recentStats.videoUrl && (
+                  <TouchableOpacity style={[styles.drsWidgetBtn, {backgroundColor: '#ff1744'}]} onPress={() => setShowReplayModal(true)}>
+                    <Text style={styles.drsWidgetBtnText}>🎥 VIEW TRACER</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             )}
+
+            {/* REPLAY MODAL */}
+            <Modal visible={showReplayModal} transparent={true} animationType="fade">
+              <View style={styles.modalContainer}>
+                <View style={[styles.drsModalContent, {padding: 0, overflow: 'hidden'}]}>
+                  <TouchableOpacity style={{position: 'absolute', top: 10, right: 10, zIndex: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 5}} onPress={() => setShowReplayModal(false)}>
+                    <X color="#fff" size={24} />
+                  </TouchableOpacity>
+                  {recentStats?.videoUrl && (
+                    <Video
+                      source={{ uri: recentStats.videoUrl }}
+                      style={{ width: 300, height: 400 }}
+                      useNativeControls
+                      resizeMode="contain"
+                      isLooping
+                      shouldPlay
+                    />
+                  )}
+                </View>
+              </View>
+            </Modal>
 
             {/* ADVANCED SCOREBOARD */}
             {sessionType === 'MATCH' && (
@@ -457,15 +522,6 @@ export default function LiveCameraScreen({ route, navigation }) {
                   ))}
                   <TouchableOpacity style={[styles.scoreBox, styles.wicketBox]} onPress={() => handleScore(0, 'WICKET')}>
                     <Text style={styles.scoreBoxText}>W</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={[styles.scoreBox, {backgroundColor: '#2979ff'}]} onPress={() => {
-                    setShowDRSModal(true);
-                    setDrsStep(0);
-                    setTimeout(() => setDrsStep(1), 1000);
-                    setTimeout(() => setDrsStep(2), 2500);
-                    setTimeout(() => setDrsStep(3), 4000);
-                  }}>
-                    <Text style={[styles.scoreBoxText, {fontSize: 14}]}>DRS</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -580,5 +636,7 @@ const styles = StyleSheet.create({
   recentStatsTitle: { color: '#00e676', fontWeight: '900', marginBottom: 10, textAlign: 'center', fontSize: 16 },
   statLine: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5, width: 120 },
   statLineLabel: { color: '#aaa', fontWeight: 'bold' },
-  statLineValue: { color: '#fff', fontWeight: 'bold' }
+  statLineValue: { color: '#fff', fontWeight: 'bold' },
+  drsWidgetBtn: { flexDirection: 'row', backgroundColor: '#2979ff', padding: 8, borderRadius: 8, marginTop: 10, justifyContent: 'center', alignItems: 'center' },
+  drsWidgetBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 12, marginLeft: 5 }
 });

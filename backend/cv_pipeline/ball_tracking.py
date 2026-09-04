@@ -177,10 +177,50 @@ def process_ball_tracking(video_path: str):
         except:
             pass
 
+    # --- NEW: GENERATE RED TRACER VIDEO ---
+    processed_path = video_path.replace(".mp4", "_processed.mp4")
+    cap = cv2.VideoCapture(video_path)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(processed_path, fourcc, fps, (width, height))
+    
+    current_frame = 0
+    tracer_points = []
+    
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        current_frame += 1
+        
+        # Add point to tracer if it belongs to this frame or earlier
+        for pt in ball_trajectory:
+            if pt[2] == current_frame:
+                tracer_points.append((pt[0], pt[1]))
+                
+        # Draw the tracer
+        if len(tracer_points) > 1:
+            pts = np.array(tracer_points, np.int32)
+            pts = pts.reshape((-1, 1, 2))
+            # Draw semi-transparent red line with a glow effect
+            cv2.polylines(frame, [pts], isClosed=False, color=(0, 0, 255), thickness=4)
+            cv2.polylines(frame, [pts], isClosed=False, color=(0, 100, 255), thickness=2) # Inner glow
+            
+            # Draw the current ball position
+            cv2.circle(frame, tracer_points[-1], 6, (0, 0, 255), -1)
+            cv2.circle(frame, tracer_points[-1], 3, (255, 255, 255), -1)
+
+        out.write(frame)
+        
+    cap.release()
+    out.release()
+    
+    video_filename = processed_path.split("/")[-1].split("\\")[-1]
+
     return {
         "speed": round(speed_kmh, 1),
         "swing": round(swing_degrees, 1),
         "turn": round(turn_degrees, 1),
+        "videoUrl": f"http://192.168.2.65:8000/videos/{video_filename}",
         "hawkeye": {
             "pitching": pitching,
             "impact": impact,
