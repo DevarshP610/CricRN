@@ -78,36 +78,129 @@ import asyncio
 import base64
 import cv2
 import numpy as np
+import math
+
+class LiveDeliveryDetector:
+    """
+    Real-time Computer Vision Delivery Detector.
+    Processes live video frames streamed via WebSocket from the phone.
+    Tracks ball entry, flight, and automatically triggers stop when the ball
+    leaves the frame or stops moving (dead ball).
+    """
+    def __init__(self):
+        self.state = "WAITING"  # WAITING -> IN_FLIGHT -> DEAD
+        self.prev_gray = None
+        self.ball_positions = []
+        self.in_flight_count = 0
+        self.lost_frames = 0
+        self.still_frames = 0
+
+    def process_frame(self, frame_bgr):
+        h, w = frame_bgr.shape[:2]
+        scale = 320.0 / w
+        small = cv2.resize(frame_bgr, (320, int(h * scale)))
+        gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (9, 9), 0)
+
+        if self.prev_gray is None:
+            self.prev_gray = gray
+            return "WAITING"
+
+        diff = cv2.absdiff(self.prev_gray, gray)
+        self.prev_gray = gray
+        
+        _, thresh = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+
+        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        moving_balls = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if 10 < area < 3000:
+                perimeter = cv2.arcLength(c, True)
+                if perimeter > 0:
+                    circularity = 4 * math.pi * area / (perimeter * perimeter)
+                    if circularity > 0.2:
+                        (cx, cy), _ = cv2.minEnclosingCircle(c)
+                        moving_balls.append((cx, cy, area, circularity))
+
+        if self.state == "WAITING":
+            if len(moving_balls) > 0:
+                best = max(moving_balls, key=lambda b: b[3])
+                self.state = "IN_FLIGHT"
+                self.ball_positions = [(best[0], best[1])]
+                self.in_flight_count = 1
+                self.lost_frames = 0
+                self.still_frames = 0
+                print(f"[AI Auto-Stop] Ball entered frame! Tracking in flight...")
+                return "BALL_ENTERED"
+            return "WAITING"
+
+        elif self.state == "IN_FLIGHT":
+            self.in_flight_count += 1
+            last_pos = self.ball_positions[-1]
+
+            if len(moving_balls) > 0:
+                candidates = [b for b in moving_balls if np.hypot(b[0] - last_pos[0], b[1] - last_pos[1]) < 120]
+                if candidates:
+                    closest = min(candidates, key=lambda b: np.hypot(b[0] - last_pos[0], b[1] - last_pos[1]))
+                    disp = np.hypot(closest[0] - last_pos[0], closest[1] - last_pos[1])
+                    self.ball_positions.append((closest[0], closest[1]))
+                    self.lost_frames = 0
+                    
+                    if disp < 4.0:
+                        self.still_frames += 1
+                    else:
+                        self.still_frames = 0
+                        
+                    if self.still_frames >= 2 and self.in_flight_count >= 3:
+                        self.state = "DEAD"
+                        print("[AI Auto-Stop] Ball came to rest. Dead ball detected!")
+                        return "BALL_STOPPED"
+                else:
+                    self.lost_frames += 1
+            else:
+                self.lost_frames += 1
+
+            if self.lost_frames >= 2 and self.in_flight_count >= 3:
+                self.state = "DEAD"
+                print("[AI Auto-Stop] Ball left frame. Delivery completed!")
+                return "BALL_LEFT"
+
+            return "IN_FLIGHT"
+
+        return "DEAD"
 
 @app.websocket("/ws/live-stream")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    
-    # We use a very simple AI motion detector for auto-stop.
-    # When a fast moving object is detected, we wait 1.5 seconds and stop recording.
-    frame_count = 0
-    motion_detected = False
+    detector = LiveDeliveryDetector()
+    print("[AI Auto-Stop] WebSocket connected for live AI delivery detection.")
     
     try:
         while True:
             data = await websocket.receive_json()
-            if data["type"] == "frame":
-                frame_count += 1
-                # Decode base64
+            if data.get("type") == "frame":
                 img_data = base64.b64decode(data["data"])
                 np_arr = np.frombuffer(img_data, np.uint8)
                 img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                 
-                # Super basic AI motion detection threshold
-                if frame_count > 3 and not motion_detected:
-                    # Simulating detection logic: after a few frames, assume the bowler released the ball
-                    motion_detected = True
-                    # Let the ball travel to the batsman (wait 1.5s) then send STOP
-                    await asyncio.sleep(1.5)
-                    await websocket.send_json({"action": "STOP_RECORDING"})
-                    break
+                if img is not None:
+                    status = detector.process_frame(img)
+                    if status in ["BALL_STOPPED", "BALL_LEFT"]:
+                        print(f"[AI Auto-Stop] Triggering STOP_RECORDING action ({status})")
+                        await websocket.send_json({
+                            "action": "STOP_RECORDING",
+                            "reason": status,
+                            "flight_frames": detector.in_flight_count
+                        })
+                        break
     except WebSocketDisconnect:
-        pass
+        print("[AI Auto-Stop] WebSocket client disconnected.")
+    except Exception as e:
+        print(f"[AI Auto-Stop] Error: {e}")
 
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):

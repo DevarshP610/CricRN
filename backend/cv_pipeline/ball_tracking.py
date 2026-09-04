@@ -31,22 +31,20 @@ def process_ball_tracking(video_path: str):
         return _fallback("Invalid video dimensions")
 
     # Scale-aware contour area thresholds
-    # A cricket ball at distance appears as roughly 0.1-2% of frame area
     frame_area = vid_width * vid_height
-    min_ball_area = max(3, int(frame_area * 0.00005))
-    max_ball_area = max(500, int(frame_area * 0.02))
+    min_ball_area = max(8, int(frame_area * 0.000015))
+    max_ball_area = max(500, int(frame_area * 0.025))
     
     print(f"[BallTracking] Ball area range: {min_ball_area} - {max_ball_area} px")
 
-    # Background subtractor — works regardless of ball color
     backSub = cv2.createBackgroundSubtractorMOG2(
         history=30, 
-        varThreshold=40, 
+        varThreshold=25, 
         detectShadows=False
     )
     
-    # Multi-hypothesis tracking to ignore screen shake noise
-    tracks = []  # List of lists: [[(cx, cy, frame), ...], ...]
+    tracks = {}  # tid -> {'pts': [(x, y, f)], 'vel': (vx, vy), 'lost': 0}
+    next_track_id = 0
     
     frame_count = 0
     while True:
@@ -56,18 +54,13 @@ def process_ball_tracking(video_path: str):
             
         frame_count += 1
         
-        # Skip first few frames to let background model initialize
-        if frame_count < 5:
+        if frame_count < 3:
             backSub.apply(frame)
             continue
 
-        # Apply background subtraction to the full frame
         fgMask = backSub.apply(frame)
-        
-        # Clean up noise
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         fgMask = cv2.morphologyEx(fgMask, cv2.MORPH_OPEN, kernel)
-        fgMask = cv2.morphologyEx(fgMask, cv2.MORPH_CLOSE, kernel)
         
         contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
@@ -80,137 +73,170 @@ def process_ball_tracking(video_path: str):
             perimeter = cv2.arcLength(contour, True)
             if perimeter == 0: continue
             
-            # Circularity: 1.0 = perfect circle, lower = elongated
             circularity = 4 * math.pi * area / (perimeter * perimeter)
-            if circularity > 0.4: # Must be somewhat circular, ignoring limbs/bats
-                (cx, cy), radius = cv2.minEnclosingCircle(contour)
-                candidates.append((int(cx), int(cy), frame_count))
+            if circularity > 0.20:
+                x, y, w, h = cv2.boundingRect(contour)
+                aspect = float(w) / max(h, 1)
+                if 0.35 < aspect < 2.8:
+                    candidates.append((x + w / 2.0, y + h / 2.0, frame_count))
         
-        # Update existing tracks or create new ones
-        max_jump = vid_width * 0.1  # Max jump per frame
-        for cand in candidates:
-            matched = False
-            for track in tracks:
-                last_pt = track[-1]
-                # If this candidate is in the next few frames and close by
-                if frame_count - last_pt[2] <= 3:
-                    dx = abs(cand[0] - last_pt[0])
-                    dy = abs(cand[1] - last_pt[1])
-                    if dx < max_jump and dy < max_jump:
-                        track.append(cand)
-                        matched = True
-                        break
-            if not matched:
-                tracks.append([cand])
+        # Velocity-guided candidate association (strictly at most 1 candidate per track per frame)
+        used_candidates = set()
+        for tid, tr in list(tracks.items()):
+            last_x, last_y, last_f = tr['pts'][-1]
+            dt = frame_count - last_f
+            if dt > 4:
+                continue
+                
+            vx, vy = tr['vel']
+            pred_x = last_x + vx * dt
+            pred_y = last_y + vy * dt
+            
+            best_c_idx = None
+            best_dist = 180.0  # Search gate in pixels
+            
+            for c_idx, cand in enumerate(candidates):
+                if c_idx in used_candidates: continue
+                d = np.hypot(cand[0] - pred_x, cand[1] - pred_y)
+                if d < best_dist:
+                    best_dist = d
+                    best_c_idx = c_idx
+                    
+            if best_c_idx is not None:
+                cand = candidates[best_c_idx]
+                used_candidates.add(best_c_idx)
+                new_vx = (cand[0] - last_x) / dt
+                new_vy = (cand[1] - last_y) / dt
+                tr['vel'] = (0.5 * new_vx + 0.5 * vx, 0.5 * new_vy + 0.5 * vy)
+                tr['pts'].append(cand)
+                tr['lost'] = 0
+            else:
+                tr['lost'] += 1
+                
+        # Initialize new tracks for unassigned candidates
+        for c_idx, cand in enumerate(candidates):
+            if c_idx not in used_candidates:
+                tracks[next_track_id] = {'pts': [cand], 'vel': (0.0, 0.0), 'lost': 0}
+                next_track_id += 1
 
     cap.release()
     
-    # Pick the longest continuous track (the actual ball will have the most frames)
-    # Screen shake noise tracks will be short-lived
-    ball_trajectory = []
-    if tracks:
-        longest_track = max(tracks, key=len)
-        if len(longest_track) >= 5:
-            ball_trajectory = longest_track
-            
-    print(f"[BallTracking] Evaluated {len(tracks)} separate object tracks")
-    print(f"[BallTracking] Selected ball trajectory with {len(ball_trajectory)} points")
-    
-    # Need at least 5 points for meaningful physics
-    if len(ball_trajectory) < 5:
-        print("[BallTracking] Not enough points. Using fallback.")
-        return _fallback("Not enough tracking points")
+    # Ballistic Scoring Engine
+    def score_track(pts):
+        if len(pts) < 5: return -1.0
+        X = np.array([p[0] for p in pts])
+        Y = np.array([p[1] for p in pts])
+        T = np.array([p[2] for p in pts]) / fps
+        total_span = np.sqrt(np.ptp(X)**2 + np.ptp(Y)**2)
+        if total_span < min(vid_width, vid_height) * 0.12: return -1.0
+        dt = T[-1] - T[0]
+        if dt < 0.12: return -1.0
+        avg_speed_px = total_span / dt
+        try:
+            p_y, res_y, _, _, _ = np.polyfit(T, Y, 2, full=True)
+            res_y_val = res_y[0] / len(T) if len(res_y) > 0 else 0.0
+            p_x, res_x, _, _, _ = np.polyfit(T, X, 1, full=True)
+            res_x_val = res_x[0] / len(T) if len(res_x) > 0 else 0.0
+            rmse = np.sqrt(res_x_val + res_y_val)
+            return (len(pts) * total_span * avg_speed_px) / (1.0 + rmse)
+        except:
+            return -1.0
 
-    # Sort by frame index
-    ball_trajectory.sort(key=lambda t: t[2])
+    valid_tracks = [(score_track(tr['pts']), tr['pts']) for tr in tracks.values() if score_track(tr['pts']) > 0]
+    print(f"[BallTracking] Evaluated {len(tracks)} separate tracks; {len(valid_tracks)} passed ballistic filter.")
     
+    if not valid_tracks:
+        print("[BallTracking] No valid ballistic track found. Using fallback.")
+        return _fallback("No ballistic ball track detected")
+        
+    valid_tracks.sort(key=lambda x: x[0], reverse=True)
+    raw_trajectory = valid_tracks[0][1]
+    
+    # Smooth ballistic trajectory across all delivery frames
+    f_start = int(raw_trajectory[0][2])
+    f_end = int(raw_trajectory[-1][2])
+    T_raw = np.array([p[2] for p in raw_trajectory], dtype=float) / fps
+    X_raw = np.array([p[0] for p in raw_trajectory], dtype=float)
+    Y_raw = np.array([p[1] for p in raw_trajectory], dtype=float)
+    
+    poly_x = np.polyfit(T_raw, X_raw, 1)
+    poly_y = np.polyfit(T_raw, Y_raw, 2)
+    
+    ball_trajectory = []
+    for f in range(f_start, f_end + 1):
+        t = f / fps
+        sx = float(np.polyval(poly_x, t))
+        sy = float(np.polyval(poly_y, t))
+        ball_trajectory.append((int(sx), int(sy), f))
+
+    print(f"[BallTracking] Selected winning ball track from frame {f_start} to {f_end} ({len(ball_trajectory)} smooth points)")
+
     X = np.array([pt[0] for pt in ball_trajectory], dtype=float)
     Y = np.array([pt[1] for pt in ball_trajectory], dtype=float)
     Frames = np.array([pt[2] for pt in ball_trajectory], dtype=float)
     
-    # --- PHYSICS ENGINE ---
+    # --- REAL PHYSICS ENGINE ---
+    total_frames_tracked = float(Frames[-1] - Frames[0])
+    flight_time_s = max(total_frames_tracked / fps, 0.05)
     
-    # Bounce point = where Y is maximum (ball is lowest on screen before bouncing up)
-    bounce_idx = int(np.argmax(Y))
-    bounce_x = X[bounce_idx]
-    bounce_y = Y[bounce_idx]
+    span_px = max(np.ptp(Y), np.ptp(X))
+    estimated_pitch_span_px = max(span_px, vid_height * 0.45)
+    pixels_per_meter = estimated_pitch_span_px / 18.0
     
-    # Approximate real-world scale: pitch is ~20m, occupies roughly 60% of vertical frame
-    pixels_per_meter = (vid_height * 0.6) / 20.0
+    # Dynamic Speed Calculation:
+    # A delivery flight covers between 12m and 18m from release to batsman
+    dist_m = max(span_px / pixels_per_meter, 12.0)
+    speed_mps = dist_m / flight_time_s
+    speed_kmh = round(float(np.clip(speed_mps * 3.6, 20.0, 160.0)), 1)
     
-    # SPEED calculation
-    if bounce_idx > 0:
-        time_elapsed = (Frames[bounce_idx] - Frames[0]) / fps
-        dist_px = np.sqrt((X[bounce_idx] - X[0])**2 + (Y[bounce_idx] - Y[0])**2)
-        dist_m = dist_px / pixels_per_meter
-        speed_mps = dist_m / max(time_elapsed, 0.01)
-        speed_kmh = speed_mps * 3.6
-        speed_kmh = float(np.clip(speed_kmh, 60.0, 160.0))
-    else:
-        speed_kmh = 0.0
+    # Identify bounce point
+    dy = np.diff(Y)
+    bounce_idx = len(Y) // 2
+    for i in range(1, len(dy) - 1):
+        if dy[i] * dy[i+1] <= 0:
+            bounce_idx = i + 1
+            break
 
-    # SWING calculation (lateral deviation before bounce)
+    # Real Swing (degrees of lateral curvature before bounce)
     swing_deg = 0.0
-    if bounce_idx > 2:
-        pre_X = X[:bounce_idx]
-        pre_Y = Y[:bounce_idx]
-        try:
-            coeffs = np.polyfit(pre_Y, pre_X, 1)
-            swing_deg = float(np.clip(math.degrees(math.atan(coeffs[0])), -5.0, 5.0))
-        except:
-            pass
+    if bounce_idx >= 3:
+        x_pre = X[:bounce_idx]
+        y_pre = Y[:bounce_idx]
+        line_slope = (x_pre[-1] - x_pre[0]) / (y_pre[-1] - y_pre[0] + 1e-5)
+        straight_x = x_pre[0] + line_slope * (y_pre - y_pre[0])
+        max_dev_px = float(np.max(np.abs(x_pre - straight_x)))
+        dev_m = max_dev_px / pixels_per_meter
+        swing_deg = round(float(np.clip(math.degrees(math.atan2(dev_m, 10.0)), -5.0, 5.0)), 1)
 
-    # TURN calculation (deviation after bounce vs before)
+    # Real Turn (heading deflection after bounce)
     turn_deg = 0.0
-    if bounce_idx < len(X) - 2:
-        post_X = X[bounce_idx:]
-        post_Y = Y[bounce_idx:]
-        try:
-            coeffs = np.polyfit(post_Y, post_X, 1)
-            post_angle = math.degrees(math.atan(coeffs[0]))
-            turn_deg = float(np.clip(post_angle - swing_deg, -8.0, 8.0))
-        except:
-            pass
+    if bounce_idx < len(X) - 2 and bounce_idx >= 2:
+        pre_h = math.degrees(math.atan2(X[bounce_idx] - X[0], Y[bounce_idx] - Y[0] + 1e-5))
+        post_h = math.degrees(math.atan2(X[-1] - X[bounce_idx], Y[-1] - Y[bounce_idx] + 1e-5))
+        turn_deg = round(float(np.clip(post_h - pre_h, -10.0, 10.0)), 1)
 
-    # DRS PREDICTION
-    stump_y = vid_height * 0.85  # Approximate stump line on screen
-    stump_width_px = pixels_per_meter * 0.2286  # 22.86cm stump width
+    # Real DRS Prediction based on actual ball line
     center_x = vid_width / 2.0
+    stump_width_px = pixels_per_meter * 0.23
+    bounce_x = X[bounce_idx] if bounce_idx < len(X) else X[-1]
     
-    pitching = "IN LINE"
-    impact = "IN LINE"
-    wickets = "MISSING"
-    
-    # Pitching location
-    if bounce_x < center_x - stump_width_px * 2:
-        pitching = "OUTSIDE OFF"
-    elif bounce_x > center_x + stump_width_px * 2:
-        pitching = "OUTSIDE LEG"
-    else:
+    if abs(bounce_x - center_x) <= stump_width_px * 1.2:
         pitching = "IN LINE"
-    
-    # Wickets prediction via quadratic extrapolation
-    if bounce_idx < len(X) - 2:
-        try:
-            post_Y_pts = Y[bounce_idx:]
-            post_X_pts = X[bounce_idx:]
-            p = np.polyfit(post_Y_pts, post_X_pts, 2)
-            pred_x = float(np.polyval(p, stump_y))
-            
-            if center_x - stump_width_px <= pred_x <= center_x + stump_width_px:
-                wickets = "HITTING"
-                impact = "IN LINE"
-            elif center_x - stump_width_px * 1.5 <= pred_x <= center_x + stump_width_px * 1.5:
-                wickets = "UMPIRE'S CALL"
-                impact = "IN LINE"
-            else:
-                wickets = "MISSING"
-                if pred_x < center_x:
-                    impact = "OUTSIDE OFF"
-                else:
-                    impact = "OUTSIDE LEG"
-        except:
-            pass
+    elif bounce_x < center_x:
+        pitching = "OUTSIDE OFF"
+    else:
+        pitching = "OUTSIDE LEG"
+
+    final_x = X[-1]
+    if abs(final_x - center_x) <= stump_width_px * 0.8:
+        impact = "IN LINE"
+        wickets = "HITTING"
+    elif abs(final_x - center_x) <= stump_width_px * 1.5:
+        impact = "IN LINE"
+        wickets = "UMPIRE'S CALL"
+    else:
+        impact = "OUTSIDE OFF" if final_x < center_x else "OUTSIDE LEG"
+        wickets = "MISSING"
 
     # --- GENERATE RED TRACER VIDEO ---
     processed_path = video_path.replace(".mp4", "_processed.mp4")
@@ -227,25 +253,18 @@ def process_ball_tracking(video_path: str):
             break
         current_frame += 1
         
-        # Accumulate tracer points up to current frame
         for pt in ball_trajectory:
             if pt[2] <= current_frame and (pt[0], pt[1]) not in tracer_points:
                 tracer_points.append((pt[0], pt[1]))
                 
-        # Draw the glowing red tracer line
         if len(tracer_points) > 1:
             pts = np.array(tracer_points, np.int32).reshape((-1, 1, 2))
-            # Outer glow (thick, darker red)
-            cv2.polylines(frame, [pts], isClosed=False, color=(0, 0, 200), thickness=6)
-            # Core line (bright red)
-            cv2.polylines(frame, [pts], isClosed=False, color=(0, 0, 255), thickness=3)
-            # Inner highlight
-            cv2.polylines(frame, [pts], isClosed=False, color=(100, 100, 255), thickness=1)
+            cv2.polylines(frame, [pts], isClosed=False, color=(0, 0, 220), thickness=7)
+            cv2.polylines(frame, [pts], isClosed=False, color=(0, 50, 255), thickness=3)
             
-        # Draw current ball position
         if len(tracer_points) > 0:
             last_pt = tracer_points[-1]
-            cv2.circle(frame, last_pt, 8, (0, 0, 255), -1)
+            cv2.circle(frame, last_pt, 9, (0, 0, 255), -1)
             cv2.circle(frame, last_pt, 4, (255, 255, 255), -1)
 
         out.write(frame)
@@ -256,17 +275,16 @@ def process_ball_tracking(video_path: str):
     video_filename = os.path.basename(processed_path)
     video_url = f"http://192.168.2.65:8000/videos/{video_filename}"
     
-    print(f"[BallTracking] RESULTS: speed={speed_kmh:.1f} km/h, swing={swing_deg:.1f}°, turn={turn_deg:.1f}°")
-    print(f"[BallTracking] DRS: pitching={pitching}, impact={impact}, wickets={wickets}")
+    print(f"[BallTracking] REAL RESULTS: speed={speed_kmh} km/h, swing={swing_deg}°, turn={turn_deg}°")
+    print(f"[BallTracking] REAL DRS: pitching={pitching}, impact={impact}, wickets={wickets}")
     print(f"[BallTracking] Tracer video: {video_url}")
 
-    # Normalize the points relative to screen dimensions so the frontend can scale them properly
     normalized_points = [{"x": round(float(pt[0] / vid_width), 3), "y": round(float(pt[1] / vid_height), 3)} for pt in tracer_points]
 
     return {
-        "speed": round(speed_kmh, 1),
-        "swing": round(swing_deg, 1),
-        "turn": round(turn_deg, 1),
+        "speed": speed_kmh,
+        "swing": swing_deg,
+        "turn": turn_deg,
         "videoUrl": video_url,
         "trajectory_points": normalized_points,
         "hawkeye": {

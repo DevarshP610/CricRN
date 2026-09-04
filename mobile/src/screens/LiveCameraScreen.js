@@ -117,6 +117,24 @@ export default function LiveCameraScreen({ route, navigation }) {
 
   const wsRef = useRef(null);
   const fallbackTimerRef = useRef(null);
+  const animIntervalRef = useRef(null);
+  const [trailStep, setTrailStep] = useState(0);
+
+  const startTrailAnimation = (points) => {
+    if (!points || points.length === 0) return;
+    if (animIntervalRef.current) clearInterval(animIntervalRef.current);
+    setShowTrail(true);
+    setTrailStep(1);
+    let step = 1;
+    animIntervalRef.current = setInterval(() => {
+      step += 1;
+      if (step > points.length) {
+        clearInterval(animIntervalRef.current);
+      } else {
+        setTrailStep(step);
+      }
+    }, 40); // 40ms per coordinate for smooth animated ball flight
+  };
 
   const connectAILiveStream = () => {
     const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
@@ -124,40 +142,49 @@ export default function LiveCameraScreen({ route, navigation }) {
     
     wsRef.current = new WebSocket(WS_URL);
     
-    // Safety fallback in case the AI misses the ball
+    // Safety max timer only in case bowler never bowls (12 seconds)
     fallbackTimerRef.current = setTimeout(() => {
-      console.log("AI Auto-Stop Fallback triggered!");
+      console.log("[Auto-Stop] Max safety recording limit reached.");
       stopRecording();
-    }, recordingDuration * 1000);
+    }, Math.max(recordingDuration, 8) * 1000);
     
     wsRef.current.onopen = () => {
-      // Stream snapshots to AI
+      console.log("[AI Stream] Connected to backend WebSocket for live delivery detection.");
+      let isCapturing = false;
       const streamInterval = setInterval(async () => {
+        if (isCapturing) return;
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && cameraRef.current) {
           try {
+            isCapturing = true;
             // takeSnapshot grabs the preview directly from the GPU, bypassing the startRecording lock!
-            const photo = await cameraRef.current.takeSnapshot({ quality: 50 });
+            const photo = await cameraRef.current.takeSnapshot({ quality: 25 });
             const photoPath = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
             const base64 = await FileSystem.readAsStringAsync(photoPath, { encoding: FileSystem.EncodingType.Base64 });
             wsRef.current.send(JSON.stringify({ type: 'frame', data: base64 }));
           } catch (e) {
-            console.log("Snapshot failed: ", e);
+            // Snapshot dropped or busy
+          } finally {
+            isCapturing = false;
           }
         } else {
           clearInterval(streamInterval);
         }
-      }, 300); // ~3 FPS
+      }, 120); // Fast ~8 FPS snapshot capture for real-time delivery detection
       wsRef.current.streamInterval = streamInterval;
     };
 
     wsRef.current.onmessage = async (e) => {
-      const msg = JSON.parse(e.data);
-      if (msg.action === 'STOP_RECORDING') {
-        console.log("AI detected dead ball! Stopping.");
-        if (wsRef.current?.streamInterval) clearInterval(wsRef.current.streamInterval);
-        if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
-        wsRef.current.close();
-        await stopRecording();
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.action === 'STOP_RECORDING') {
+          console.log(`[AI Auto-Stop] AI detected dead ball (${msg.reason})! Stopping recording automatically.`);
+          if (wsRef.current?.streamInterval) clearInterval(wsRef.current.streamInterval);
+          if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+          wsRef.current.close();
+          await stopRecording();
+        }
+      } catch (err) {
+        console.log("[AI Auto-Stop] Parse error:", err);
       }
     };
   };
@@ -166,6 +193,7 @@ export default function LiveCameraScreen({ route, navigation }) {
     if (!cameraRef.current) return;
     setEngineState('RECORDING_CLIP');
     setShowTrail(false);
+    if (animIntervalRef.current) clearInterval(animIntervalRef.current);
     
     try {
       connectAILiveStream(); // Hook up to true AI for automatic stop
@@ -212,16 +240,25 @@ export default function LiveCameraScreen({ route, navigation }) {
   const [showSpeedFlash, setShowSpeedFlash] = useState(false);
 
   const handleBackendResponse = (aiData) => {
-    // Store ALL real data from the backend — no fake fallbacks
+    // Store ALL real data from the backend including live trajectory points
+    const points = aiData.trajectory_points || [];
     setRecentStats({
       speed: aiData.speed,
       swing: aiData.swing,
       turn: aiData.turn,
       videoUrl: aiData.videoUrl,
+      trajectory_points: points,
       hawkeye: aiData.hawkeye || {}
     });
-    setShowSpeedFlash(true);
-    setTimeout(() => setShowSpeedFlash(false), 2000);
+
+    if (points.length > 0) {
+      startTrailAnimation(points);
+    }
+
+    if (aiData.speed > 0) {
+      setShowSpeedFlash(true);
+      setTimeout(() => setShowSpeedFlash(false), 2500);
+    }
 
     if (aiData.isNoBall) {
       setIsNoBall(true);
@@ -230,15 +267,13 @@ export default function LiveCameraScreen({ route, navigation }) {
       newScore.runs += 1;
       newScore.extras += 1;
       setScore(newScore);
-      setTimeout(() => { setIsNoBall(false); setEngineState('SCORING'); setShowTrail(true); }, 3000);
+      setTimeout(() => { setIsNoBall(false); setEngineState('SCORING'); }, 3000);
     } else {
       setIsFreeHit(false);
       if (sessionType === 'PRACTICE') {
-        setShowTrail(true);
-        setTimeout(() => { setShowTrail(false); setEngineState('IDLE'); }, 2000);
+        setEngineState('IDLE');
       } else {
         setEngineState('SCORING');
-        setShowTrail(true);
       }
     }
   };
@@ -447,35 +482,47 @@ export default function LiveCameraScreen({ route, navigation }) {
           </View>
         )}
 
-        {/* LIVE BALL TRACER OVERLAY */}
+        {/* LIVE ANIMATED BALL TRACER OVERLAY */}
         {showTrail && recentStats?.trajectory_points?.length > 0 && (
-          <View style={[StyleSheet.absoluteFill, { zIndex: 5, elevation: 5 }]} pointerEvents="none">
+          <View style={[StyleSheet.absoluteFill, { zIndex: 10, elevation: 10 }]} pointerEvents="box-none">
             <Svg height="100%" width="100%" viewBox={`0 0 ${width} ${height}`}>
-              <Polyline 
-                points={recentStats.trajectory_points.map(p => `${p.x * width},${p.y * height}`).join(' ')}
-                fill="none"
-                stroke="#ff1744"
-                strokeWidth="6"
-                strokeDasharray="10 5"
-              />
-              {/* Outer Glow */}
-              <Polyline 
-                points={recentStats.trajectory_points.map(p => `${p.x * width},${p.y * height}`).join(' ')}
-                fill="none"
-                stroke="#ff5252"
-                strokeWidth="12"
-                opacity="0.3"
-              />
-              <Circle 
-                cx={recentStats.trajectory_points[recentStats.trajectory_points.length - 1].x * width} 
-                cy={recentStats.trajectory_points[recentStats.trajectory_points.length - 1].y * height} 
-                r="10" 
-                fill="#ffea00" 
-                stroke="#ff1744"
-                strokeWidth="2"
-              />
+              {/* Glowing Neon Red Trail */}
+              {trailStep > 1 && (
+                <>
+                  <Polyline 
+                    points={recentStats.trajectory_points.slice(0, trailStep).map(p => `${p.x * width},${p.y * height}`).join(' ')}
+                    fill="none"
+                    stroke="#ff1744"
+                    strokeWidth="12"
+                    opacity="0.3"
+                  />
+                  <Polyline 
+                    points={recentStats.trajectory_points.slice(0, trailStep).map(p => `${p.x * width},${p.y * height}`).join(' ')}
+                    fill="none"
+                    stroke="#ff1744"
+                    strokeWidth="5"
+                    strokeDasharray="6 3"
+                  />
+                </>
+              )}
+              {/* Fake Ball Following Real Trajectory */}
+              {recentStats.trajectory_points[Math.min(trailStep - 1, recentStats.trajectory_points.length - 1)] && (
+                <>
+                  <Circle 
+                    cx={recentStats.trajectory_points[Math.min(trailStep - 1, recentStats.trajectory_points.length - 1)].x * width} 
+                    cy={recentStats.trajectory_points[Math.min(trailStep - 1, recentStats.trajectory_points.length - 1)].y * height} 
+                    r="12" 
+                    fill="#ffea00" 
+                    stroke="#ffffff"
+                    strokeWidth="2.5"
+                  />
+                </>
+              )}
             </Svg>
-            <Text style={{ position: 'absolute', bottom: 150, alignSelf: 'center', color: '#ff1744', fontWeight: 'bold', fontSize: 18, backgroundColor: 'rgba(0,0,0,0.5)', padding: 10, borderRadius: 10 }}>BALL TRACER</Text>
+            <View style={{ position: 'absolute', top: 50, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.75)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#ff1744', flexDirection: 'row', alignItems: 'center' }}>
+              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#ff1744', marginRight: 8 }} />
+              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13, letterSpacing: 1 }}>HAWKEYE BALL TRACER</Text>
+            </View>
           </View>
         )}
 
@@ -496,21 +543,31 @@ export default function LiveCameraScreen({ route, navigation }) {
             </TouchableOpacity>
 
             {/* RECENT STATS WIDGET */}
-            {recentStats && engineState === 'IDLE' && (
+            {recentStats && engineState !== 'RECORDING_CLIP' && engineState !== 'ANALYZING' && (
               <View style={styles.recentStatsWidget}>
                 <Text style={styles.recentStatsTitle}>LAST BALL</Text>
-                <View style={styles.statLine}>
-                  <Text style={styles.statLineLabel}>Speed:</Text>
-                  <Text style={styles.statLineValue}>{recentStats.speed} km/h</Text>
-                </View>
-                <View style={styles.statLine}>
-                  <Text style={styles.statLineLabel}>Swing:</Text>
-                  <Text style={styles.statLineValue}>{recentStats.swing}°</Text>
-                </View>
-                <View style={styles.statLine}>
-                  <Text style={styles.statLineLabel}>Turn:</Text>
-                  <Text style={styles.statLineValue}>{recentStats.turn}°</Text>
-                </View>
+                {recentStats.speed > 0 ? (
+                  <>
+                    <View style={styles.statLine}>
+                      <Text style={styles.statLineLabel}>Speed:</Text>
+                      <Text style={styles.statLineValue}>{recentStats.speed} km/h</Text>
+                    </View>
+                    <View style={styles.statLine}>
+                      <Text style={styles.statLineLabel}>Swing:</Text>
+                      <Text style={styles.statLineValue}>{recentStats.swing}°</Text>
+                    </View>
+                    <View style={styles.statLine}>
+                      <Text style={styles.statLineLabel}>Turn:</Text>
+                      <Text style={styles.statLineValue}>{recentStats.turn}°</Text>
+                    </View>
+                  </>
+                ) : (
+                  <View style={{ marginBottom: 8 }}>
+                    <Text style={{ color: '#ff9100', fontSize: 12, fontWeight: 'bold', textAlign: 'center' }}>NO BALL DETECTED</Text>
+                    <Text style={{ color: '#aaa', fontSize: 10, textAlign: 'center', marginTop: 2 }}>Hold camera steady on delivery</Text>
+                  </View>
+                )}
+
                 <TouchableOpacity style={styles.drsWidgetBtn} onPress={() => {
                   setShowDRSModal(true);
                   setDrsStep(0);
@@ -521,12 +578,13 @@ export default function LiveCameraScreen({ route, navigation }) {
                   <Target color="#fff" size={16} />
                   <Text style={styles.drsWidgetBtnText}>DRS REVIEW</Text>
                 </TouchableOpacity>
+
                 {recentStats.trajectory_points?.length > 0 && (
-                  <TouchableOpacity style={[styles.drsWidgetBtn, {backgroundColor: '#ff1744'}]} onPress={() => {
-                    setShowTrail(true);
-                    setTimeout(() => setShowTrail(false), 5000);
-                  }}>
-                    <Text style={styles.drsWidgetBtnText}>🎥 VIEW TRACER</Text>
+                  <TouchableOpacity 
+                    style={[styles.drsWidgetBtn, {backgroundColor: '#ff1744'}]} 
+                    onPress={() => startTrailAnimation(recentStats.trajectory_points)}
+                  >
+                    <Text style={styles.drsWidgetBtnText}>🎥 REPLAY TRACER</Text>
                   </TouchableOpacity>
                 )}
               </View>
