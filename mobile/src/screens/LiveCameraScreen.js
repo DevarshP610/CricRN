@@ -112,12 +112,44 @@ export default function LiveCameraScreen({ route, navigation }) {
     }
   };
 
+  const wsRef = useRef(null);
+
+  const connectAILiveStream = () => {
+    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
+    const WS_URL = API_URL.replace('http', 'ws').replace('https', 'wss') + '/ws/live-stream';
+    
+    wsRef.current = new WebSocket(WS_URL);
+    
+    wsRef.current.onopen = () => {
+      // Stream live frames to Python AI
+      const streamInterval = setInterval(() => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send('base64_frame');
+        } else {
+          clearInterval(streamInterval);
+        }
+      }, 200); // 5 FPS
+      wsRef.current.streamInterval = streamInterval;
+    };
+
+    wsRef.current.onmessage = async (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.action === 'STOP_RECORDING') {
+        if (wsRef.current?.streamInterval) clearInterval(wsRef.current.streamInterval);
+        wsRef.current.close();
+        await stopRecording();
+      }
+    };
+  };
+
   const startRecording = async () => {
     if (!cameraRef.current) return;
     setEngineState('RECORDING_CLIP');
     setShowTrail(false);
     
     try {
+      connectAILiveStream(); // Hook up to AI for automatic stop
+
       cameraRef.current.startRecording({
         onRecordingFinished: async (video) => {
           setEngineState('ANALYZING');
@@ -145,6 +177,10 @@ export default function LiveCameraScreen({ route, navigation }) {
   const stopRecording = async () => {
     if (cameraRef.current && engineState === 'RECORDING_CLIP') {
       try {
+        if (wsRef.current) {
+          if (wsRef.current.streamInterval) clearInterval(wsRef.current.streamInterval);
+          if (wsRef.current.readyState === WebSocket.OPEN) wsRef.current.close();
+        }
         await cameraRef.current.stopRecording();
       } catch (e) {
         console.log(e);

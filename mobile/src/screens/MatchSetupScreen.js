@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, SafeAreaView, ScrollView, Alert } from 'react-native';
 import { Trophy, Plus, X } from 'lucide-react-native';
+import { BlurView } from 'expo-blur';
+import { LinearGradient } from 'expo-linear-gradient';
 
 export default function MatchSetupScreen({ navigation }) {
   const [teamA, setTeamA] = useState('Strikers');
@@ -10,9 +12,7 @@ export default function MatchSetupScreen({ navigation }) {
   
   const [teamARoster, setTeamARoster] = useState(['Player 1', 'Player 2', 'Player 3', 'Player 4', 'Player 5', 'Player 6']);
   const [teamBRoster, setTeamBRoster] = useState(['Player 1', 'Player 2', 'Player 3', 'Player 4', 'Player 5', 'Player 6']);
-  const [newPlayerA, setNewPlayerA] = useState('');
-  const [newPlayerB, setNewPlayerB] = useState('');
-
+  
   // Toss
   const [tossWinner, setTossWinner] = useState('Team A');
   const [tossDecision, setTossDecision] = useState('BAT');
@@ -25,21 +25,6 @@ export default function MatchSetupScreen({ navigation }) {
   const [striker, setStriker] = useState('');
   const [nonStriker, setNonStriker] = useState('');
 
-  const addPlayer = (team) => {
-    if (team === 'A' && newPlayerA.trim()) {
-      setTeamARoster([...teamARoster, newPlayerA.trim()]);
-      setNewPlayerA('');
-    } else if (team === 'B' && newPlayerB.trim()) {
-      setTeamBRoster([...teamBRoster, newPlayerB.trim()]);
-      setNewPlayerB('');
-    }
-  };
-
-  const removePlayer = (team, index) => {
-    if (team === 'A') setTeamARoster(teamARoster.filter((_, i) => i !== index));
-    if (team === 'B') setTeamBRoster(teamBRoster.filter((_, i) => i !== index));
-  };
-
   const handleStart = () => {
     if (!striker || !nonStriker) return Alert.alert('Error', 'Please select both opening batsmen.');
     if (striker === nonStriker) return Alert.alert('Error', 'Striker and Non-Striker must be different players.');
@@ -48,45 +33,24 @@ export default function MatchSetupScreen({ navigation }) {
       sessionType: 'MATCH',
       matchDetails: { 
         teamA, teamB, format, overs: parseInt(overs) || 20,
-        battingTeamName, bowlingTeamName,
-        battingRoster, bowlingRoster,
-        striker, nonStriker 
-      }
+        toss: { winner: tossWinner, decision: tossDecision }
+      },
+      battingTeam: { name: battingTeamName, roster: battingRoster },
+      bowlingTeam: { name: bowlingTeamName, roster: bowlingRoster },
+      openingBatsmen: { striker, nonStriker }
     });
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
-        <Text style={styles.title}>Match Setup</Text>
+    <LinearGradient colors={['#0a192f', '#020c1b']} style={styles.container}>
+      <SafeAreaView style={{flex:1}}>
+        <View style={styles.header}>
+          <Trophy color="#00e676" size={28} />
+          <Text style={styles.headerTitle}>MATCH SETUP</Text>
+        </View>
 
-        <View style={styles.section}>
-          <Text style={styles.label}>Team A Name</Text>
-          <TextInput style={styles.input} value={teamA} onChangeText={setTeamA} placeholderTextColor="#555" />
+        <ScrollView style={styles.content} contentContainerStyle={{ paddingBottom: 50 }}>
           
-          <Text style={styles.label}>Team B Name</Text>
-          <TextInput style={styles.input} value={teamB} onChangeText={setTeamB} placeholderTextColor="#555" />
-        </View>
-
-        <View style={styles.sectionRow}>
-          <View style={{flex: 1, marginRight: 10}}>
-            <Text style={styles.label}>Format</Text>
-            <TextInput style={styles.input} value={format} onChangeText={setFormat} />
-          </View>
-          <View style={{flex: 1, marginLeft: 10}}>
-            <Text style={styles.label}>Overs</Text>
-            <TextInput style={styles.input} value={overs} onChangeText={setOvers} keyboardType="numeric" />
-          </View>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.label}>The Toss</Text>
-          <View style={styles.tossRow}>
-            <TouchableOpacity style={[styles.tossBtn, tossWinner === 'Team A' && styles.tossActive]} onPress={() => setTossWinner('Team A')}>
-              <Text style={styles.tossText}>{teamA} Won</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.tossBtn, tossWinner === 'Team B' && styles.tossActive]} onPress={() => setTossWinner('Team B')}>
-              <Text style={styles.tossText}>{teamB} Won</Text>
             </TouchableOpacity>
           </View>
           <View style={styles.tossRow}>

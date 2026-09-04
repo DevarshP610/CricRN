@@ -22,6 +22,29 @@ os.makedirs("temp_videos", exist_ok=True)
 def ping():
     return {"status": "ok", "message": "CricCoach Backend is running"}
 
+from fastapi import WebSocket, WebSocketDisconnect
+import asyncio
+
+@app.websocket("/ws/live-stream")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    print("Phone connected to AI Live Stream!")
+    frame_count = 0
+    try:
+        while True:
+            # Receive base64 frame from the phone
+            data = await websocket.receive_text()
+            frame_count += 1
+            
+            # TODO: In Phase 3, run YOLOv8 on this frame!
+            # For now, simulate the AI detecting the ball going "dead" after 25 frames (approx 5-6 seconds)
+            if frame_count >= 25:
+                print("AI DETECTED BALL IS DEAD! Sending STOP signal.")
+                await websocket.send_json({"action": "STOP_RECORDING"})
+                frame_count = 0 # reset for next ball
+    except WebSocketDisconnect:
+        print("Phone disconnected from AI Live Stream.")
+
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
     file_location = f"temp_videos/{file.filename}"
