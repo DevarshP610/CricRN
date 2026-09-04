@@ -1,5 +1,6 @@
 import os
-from fastapi import FastAPI, UploadFile, File, Form
+import uuid
+from fastapi import FastAPI, UploadFile, File, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
 
@@ -246,19 +247,62 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"[AI Autonomous] Error: {e}")
 
 @app.post("/upload-video")
-async def upload_video(file: UploadFile = File(...), pitch_length: float = Form(10.0)):
-    file_location = f"temp_videos/{file.filename}"
+async def upload_video(request: Request, file: UploadFile = File(...), pitch_length: float = Form(10.0)):
+    unique_prefix = uuid.uuid4().hex[:8]
+    safe_filename = f"{unique_prefix}_{file.filename}"
+    file_location = f"temp_videos/{safe_filename}"
+    
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    tracking_data = process_ball_tracking(file_location, pitch_length_m=pitch_length)
-    biomechanics_data = process_biomechanics(file_location)
+    try:
+        tracking_data = process_ball_tracking(file_location, pitch_length_m=pitch_length)
+    except Exception as e:
+        print(f"[Upload Error] Tracking pipeline error: {e}")
+        tracking_data = {
+            "speed": 0.0,
+            "release_speed": 0.0,
+            "pitch_speed": 0.0,
+            "length_category": "UNKNOWN",
+            "stump_target": "UNKNOWN",
+            "swing": 0.0,
+            "turn": 0.0,
+            "trajectory_points": [],
+            "flight_start_frame": 0,
+            "bounce_frame": 0,
+            "dead_ball_frame": 0,
+            "hawkeye": {
+                "pitching": "UNKNOWN",
+                "impact": "UNKNOWN",
+                "wickets": "UNKNOWN",
+                "stump_target": "UNKNOWN"
+            }
+        }
+
+    try:
+        biomechanics_data = process_biomechanics(file_location)
+    except Exception as e:
+        print(f"[Upload Error] Biomechanics pipeline error: {e}")
+        biomechanics_data = {"isNoBall": False, "shotType": "UNKNOWN"}
     
     try:
         os.remove(file_location)
     except:
         pass
     
+    raw_video_url = tracking_data.get("videoUrl", None)
+    full_video_url = None
+    if raw_video_url:
+        if raw_video_url.startswith("http"):
+            full_video_url = raw_video_url
+        else:
+            base_url = str(request.base_url).rstrip('/')
+            # If request arrived via reverse proxy or ngrok, preserve scheme
+            forwarded_proto = request.headers.get("x-forwarded-proto")
+            if forwarded_proto and base_url.startswith("http:"):
+                base_url = f"{forwarded_proto}://" + base_url.split("://", 1)[1]
+            full_video_url = f"{base_url}{raw_video_url}"
+
     return {
         "speed": tracking_data.get("speed", 0),
         "release_speed": tracking_data.get("release_speed", 0),
@@ -267,7 +311,7 @@ async def upload_video(file: UploadFile = File(...), pitch_length: float = Form(
         "stump_target": tracking_data.get("stump_target", "UNKNOWN"),
         "swing": tracking_data.get("swing", 0),
         "turn": tracking_data.get("turn", 0),
-        "videoUrl": tracking_data.get("videoUrl", None),
+        "videoUrl": full_video_url,
         "trajectory_points": tracking_data.get("trajectory_points", []),
         "flight_start_frame": tracking_data.get("flight_start_frame", 0),
         "bounce_frame": tracking_data.get("bounce_frame", 0),

@@ -4,6 +4,8 @@ import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, Line, G, Text as S
 import { ChevronLeft, Share2, Activity, Target, Zap } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 const { width } = Dimensions.get('window');
 
 export default function PostMatchAnalysisScreen({ route, navigation }) {
@@ -15,10 +17,11 @@ export default function PostMatchAnalysisScreen({ route, navigation }) {
 
   const handlePostToBackend = async () => {
     try {
-      const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
+      const savedUrl = await AsyncStorage.getItem('cricrn_custom_server_url');
+      const API_URL = savedUrl || process.env.EXPO_PUBLIC_API_URL || 'https://salary-ferment-virtual.ngrok-free.dev';
       const matchResp = await fetch(`${API_URL}/api/matches`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
         body: JSON.stringify({
           team_a: matchDetails.teamA, team_b: matchDetails.teamB,
           format: matchDetails.format || 'T20', overs: matchDetails.overs || 20,

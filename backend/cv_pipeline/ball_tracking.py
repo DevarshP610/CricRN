@@ -297,7 +297,7 @@ def process_ball_tracking(video_path: str, pitch_length_m: float = 10.0):
     out.release()
     
     video_filename = os.path.basename(processed_path)
-    video_url = f"http://192.168.2.65:8000/videos/{video_filename}"
+    video_url = f"/videos/{video_filename}"
 
     normalized_points = [{"x": round(float(pt[0] / vid_width), 3), "y": round(float(pt[1] / vid_height), 3)} for pt in full_trajectory]
 

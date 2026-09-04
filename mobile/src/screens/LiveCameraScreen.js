@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Alert, Modal, Vibration } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Alert, Modal, Vibration, TextInput, ActivityIndicator } from 'react-native';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import { Check, Target, LogOut, AlertTriangle, X, Trophy, Bot, RefreshCw, Settings, Square } from 'lucide-react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, Line, Polyline } from 'react-native-svg';
@@ -74,6 +74,44 @@ export default function LiveCameraScreen({ route, navigation }) {
   // RECORDING SETTINGS
   const [recordingDuration, setRecordingDuration] = useState(6);
   const [showSettings, setShowSettings] = useState(false);
+
+  // BACKEND SERVER CONFIGURATION
+  const DEFAULT_SERVER_URL = process.env.EXPO_PUBLIC_API_URL || 'https://salary-ferment-virtual.ngrok-free.dev';
+  const [serverUrl, setServerUrl] = useState(DEFAULT_SERVER_URL);
+  const [testResult, setTestResult] = useState(null);
+  const [isTesting, setIsTesting] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const saved = await AsyncStorage.getItem('cricrn_custom_server_url');
+        if (saved && saved.trim()) {
+          setServerUrl(saved.trim());
+        }
+      } catch (e) {}
+    })();
+  }, []);
+
+  const testServerConnection = async (overrideUrl) => {
+    const url = (overrideUrl || serverUrl).trim().replace(/\/$/, '');
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      const resp = await fetch(`${url}/ping`, {
+        headers: { 'ngrok-skip-browser-warning': 'true' }
+      });
+      const data = await resp.json();
+      if (resp.ok && data.status === 'ok') {
+        setTestResult({ success: true, message: `Connected! (${data.message})` });
+      } else {
+        setTestResult({ success: false, message: `Server HTTP ${resp.status}` });
+      }
+    } catch (err) {
+      setTestResult({ success: false, message: `Cannot reach: ${err?.message || 'Check network'}` });
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   // AUTO-SAVE MATCH STATE
   useEffect(() => {
@@ -163,57 +201,67 @@ export default function LiveCameraScreen({ route, navigation }) {
   };
 
   // Continuous Autonomous Stream
-  const connectAILiveStream = () => {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
-    const WS_URL = API_URL.replace('http', 'ws').replace('https', 'wss') + '/ws/live-stream';
+  const connectAILiveStream = (urlOverride) => {
+    const activeUrl = (urlOverride || serverUrl).trim().replace(/\/$/, '');
+    const wsProto = activeUrl.startsWith('https') ? 'wss' : 'ws';
+    const cleanHost = activeUrl.replace(/^https?:\/\//, '');
+    const WS_URL = `${wsProto}://${cleanHost}/ws/live-stream`;
     
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
       return;
     }
     
-    wsRef.current = new WebSocket(WS_URL);
-    
-    wsRef.current.onopen = () => {
-      console.log("[AI Autonomous] Connected to backend WebSocket.");
-      let isCapturing = false;
-      const streamInterval = setInterval(async () => {
-        if (isCapturing) return;
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && cameraRef.current) {
-          try {
-            isCapturing = true;
-            // takeSnapshot grabs preview frame from GPU, bypassing Vision Camera video lock
-            const photo = await cameraRef.current.takeSnapshot({ quality: 25 });
-            const photoPath = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
-            const base64 = await FileSystem.readAsStringAsync(photoPath, { encoding: FileSystem.EncodingType.Base64 });
-            wsRef.current.send(JSON.stringify({ type: 'frame', data: base64 }));
-          } catch (e) {
-            // Drop frame if busy
-          } finally {
-            isCapturing = false;
+    try {
+      wsRef.current = new WebSocket(WS_URL);
+      
+      wsRef.current.onopen = () => {
+        console.log(`[AI Autonomous] Connected to backend WebSocket: ${WS_URL}`);
+        let isCapturing = false;
+        const streamInterval = setInterval(async () => {
+          if (isCapturing) return;
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && cameraRef.current) {
+            try {
+              isCapturing = true;
+              // takeSnapshot grabs preview frame from GPU, bypassing Vision Camera video lock
+              const photo = await cameraRef.current.takeSnapshot({ quality: 25 });
+              const photoPath = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
+              const base64 = await FileSystem.readAsStringAsync(photoPath, { encoding: FileSystem.EncodingType.Base64 });
+              wsRef.current.send(JSON.stringify({ type: 'frame', data: base64 }));
+            } catch (e) {
+              // Drop frame if busy
+            } finally {
+              isCapturing = false;
+            }
+          } else if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
+            clearInterval(streamInterval);
           }
-        } else if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
-          clearInterval(streamInterval);
-        }
-      }, 140); // ~7 FPS continuous snapshot stream
-      wsRef.current.streamInterval = streamInterval;
-    };
+        }, 140); // ~7 FPS continuous snapshot stream
+        wsRef.current.streamInterval = streamInterval;
+      };
 
-    wsRef.current.onmessage = async (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        if (msg.action === 'START_RECORDING') {
-          console.log("[AI Autonomous] AI detected run-up! Starting recording automatically.");
-          try { Vibration.vibrate(80); } catch (_) {}
-          startRecordingInternal();
-        } else if (msg.action === 'STOP_RECORDING') {
-          console.log(`[AI Autonomous] AI detected dead delivery (${msg.reason})! Stopping recording.`);
-          try { Vibration.vibrate([0, 80, 80, 80]); } catch (_) {}
-          await stopRecordingInternal();
+      wsRef.current.onmessage = async (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.action === 'START_RECORDING') {
+            console.log("[AI Autonomous] AI detected run-up! Starting recording automatically.");
+            try { Vibration.vibrate(80); } catch (_) {}
+            startRecordingInternal();
+          } else if (msg.action === 'STOP_RECORDING') {
+            console.log(`[AI Autonomous] AI detected dead delivery (${msg.reason})! Stopping recording.`);
+            try { Vibration.vibrate([0, 80, 80, 80]); } catch (_) {}
+            await stopRecordingInternal();
+          }
+        } catch (err) {
+          console.log("[AI Autonomous] Message parse error:", err);
         }
-      } catch (err) {
-        console.log("[AI Autonomous] Message parse error:", err);
-      }
-    };
+      };
+
+      wsRef.current.onerror = (err) => {
+        console.log("[AI Autonomous] WebSocket notice:", err?.message || 'Retrying on demand');
+      };
+    } catch (e) {
+      console.log("[AI Autonomous] Could not start WebSocket:", e);
+    }
   };
 
   // Connect autonomous stream once in LIVE mode
@@ -228,7 +276,7 @@ export default function LiveCameraScreen({ route, navigation }) {
       }
       if (autoCountdownTimerRef.current) clearInterval(autoCountdownTimerRef.current);
     };
-  }, [mode]);
+  }, [mode, serverUrl]);
 
   const startRecordingInternal = async () => {
     if (!cameraRef.current) return;
@@ -250,19 +298,43 @@ export default function LiveCameraScreen({ route, navigation }) {
         onRecordingFinished: async (video) => {
           setEngineState('ANALYZING');
           try {
+            const fileUri = video.path.startsWith('file://') ? video.path : `file://${video.path}`;
+            console.log('[VisionCamera] Finished recording video:', fileUri);
+
             let formData = new FormData();
-            formData.append('file', { uri: video.path, name: 'delivery.mp4', type: 'video/mp4' });
+            formData.append('file', { 
+              uri: fileUri, 
+              name: 'delivery.mp4', 
+              type: 'video/mp4' 
+            });
             formData.append('pitch_length', pitchDistance.toString());
             
-            const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
-            const response = await fetch(`${API_URL}/upload-video`, { 
-              method: 'POST', body: formData, headers: { 'Content-Type': 'multipart/form-data', 'ngrok-skip-browser-warning': 'true' } 
+            const targetUrl = serverUrl.trim().replace(/\/$/, '');
+            console.log(`[Upload] Uploading delivery to ${targetUrl}/upload-video...`);
+
+            const response = await fetch(`${targetUrl}/upload-video`, { 
+              method: 'POST', 
+              body: formData, 
+              headers: { 
+                'ngrok-skip-browser-warning': 'true',
+                'Accept': 'application/json'
+                // NOTE: DO NOT set 'Content-Type': 'multipart/form-data'! React Native will set boundary automatically.
+              } 
             });
+
+            if (!response.ok) {
+              const errBody = await response.text();
+              throw new Error(`HTTP ${response.status}: ${errBody.slice(0, 100)}`);
+            }
+
             const aiData = await response.json();
             handleBackendResponse(aiData);
           } catch (err) {
             console.log('Video upload/analysis error:', err);
-            Alert.alert('Analysis Failed', 'Could not process delivery with AI engine.');
+            Alert.alert(
+              'Analysis Failed', 
+              `Could not process delivery with AI engine.\n\nError: ${err?.message || 'Network / Upload Error'}\n\nCurrent Server: ${serverUrl}\n\nTip: You can test or change the Server URL in Settings (⚙️).`
+            );
             setEngineState('IDLE');
           }
         },
@@ -469,7 +541,84 @@ export default function LiveCameraScreen({ route, navigation }) {
               </TouchableOpacity>
             </View>
 
-            <TouchableOpacity style={styles.saveSettingsBtn} onPress={() => setShowSettings(false)}>
+            {/* SERVER URL CONFIGURATION */}
+            <Text style={[styles.settingsLabel, { marginTop: 16 }]}>AI Backend Server URL</Text>
+            <Text style={styles.settingsSubtext}>Cloud Ngrok or Local Wi-Fi PC address.</Text>
+
+            <TextInput
+              style={styles.serverInput}
+              value={serverUrl}
+              onChangeText={(t) => {
+                setServerUrl(t);
+                setTestResult(null);
+              }}
+              placeholder="https://... or http://192.168.x.x:8000"
+              placeholderTextColor="#666"
+              autoCapitalize="none"
+              autoCorrect={false}
+            />
+
+            <View style={styles.serverPresetsRow}>
+              <TouchableOpacity 
+                style={styles.serverPresetBtn} 
+                onPress={() => {
+                  const u = 'https://salary-ferment-virtual.ngrok-free.dev';
+                  setServerUrl(u);
+                  testServerConnection(u);
+                }}
+              >
+                <Text style={styles.serverPresetText}>🌐 Ngrok Cloud</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.serverPresetBtn} 
+                onPress={() => {
+                  const u = 'http://192.168.2.65:8000';
+                  setServerUrl(u);
+                  testServerConnection(u);
+                }}
+              >
+                <Text style={styles.serverPresetText}>📶 Local Wi-Fi</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.testConnectionRow}>
+              <TouchableOpacity 
+                style={[styles.testConnectionBtn, isTesting && { opacity: 0.6 }]} 
+                onPress={() => testServerConnection()}
+                disabled={isTesting}
+              >
+                {isTesting ? (
+                  <ActivityIndicator size="small" color="#000" />
+                ) : (
+                  <Text style={styles.testConnectionBtnText}>⚡ Test Connection</Text>
+                )}
+              </TouchableOpacity>
+
+              {testResult && (
+                <View style={[styles.testResultPill, { backgroundColor: testResult.success ? 'rgba(0, 230, 118, 0.2)' : 'rgba(255, 23, 68, 0.2)' }]}>
+                  <Text style={[styles.testResultText, { color: testResult.success ? '#00e676' : '#ff1744' }]}>
+                    {testResult.message}
+                  </Text>
+                </View>
+              )}
+            </View>
+
+            <TouchableOpacity 
+              style={styles.saveSettingsBtn} 
+              onPress={async () => {
+                try {
+                  await AsyncStorage.setItem('cricrn_custom_server_url', serverUrl.trim());
+                } catch (e) {}
+                setShowSettings(false);
+                if (wsRef.current) {
+                  try { wsRef.current.close(); } catch (_) {}
+                  wsRef.current = null;
+                }
+                if (mode === 'LIVE') {
+                  connectAILiveStream(serverUrl.trim());
+                }
+              }}
+            >
               <Text style={styles.saveSettingsText}>DONE</Text>
             </TouchableOpacity>
           </View>
@@ -1202,5 +1351,68 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     fontSize: 11,
     letterSpacing: 0.5,
+  },
+
+  // Server URL Configuration Styles
+  serverInput: {
+    backgroundColor: '#111',
+    borderWidth: 1,
+    borderColor: '#444',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: '#fff',
+    fontSize: 12,
+    marginBottom: 8,
+  },
+  serverPresetsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 10,
+  },
+  serverPresetBtn: {
+    flex: 1,
+    backgroundColor: '#2a2a2a',
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#444',
+  },
+  serverPresetText: {
+    color: '#ddd',
+    fontSize: 11,
+    fontWeight: 'bold',
+  },
+  testConnectionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    gap: 10,
+  },
+  testConnectionBtn: {
+    backgroundColor: '#00e676',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  testConnectionBtnText: {
+    color: '#000',
+    fontWeight: '900',
+    fontSize: 12,
+  },
+  testResultPill: {
+    flex: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    justifyContent: 'center',
+  },
+  testResultText: {
+    fontSize: 11,
+    fontWeight: 'bold',
   }
 });
