@@ -279,10 +279,46 @@ def process_ball_tracking(video_path: str):
     print(f"[BallTracking] REAL DRS: pitching={pitching}, impact={impact}, wickets={wickets}")
     print(f"[BallTracking] Tracer video: {video_url}")
 
+    # TV Broadcast Dual-Speed Engine (Release speed vs Off-the-pitch speed)
+    # Ball naturally loses 10-18% speed on pitch bounce due to grass/turf friction
+    release_speed = speed_kmh
+    pitch_speed = round(speed_kmh * 0.86, 1)
+    
+    # Length Classification (Yorker / Full / Good Length / Short)
+    bounce_progress = float(bounce_idx) / max(len(Y), 1)
+    if bounce_progress >= 0.75:
+        length_category = "YORKER"
+    elif bounce_progress >= 0.55:
+        length_category = "FULL LENGTH"
+    elif bounce_progress >= 0.35:
+        length_category = "GOOD LENGTH"
+    else:
+        length_category = "SHORT / BOUNCER"
+
+    # Specific 3-Stump Target Prediction
+    if wickets == "HITTING":
+        offset_from_center = final_x - center_x
+        if abs(offset_from_center) < stump_width_px * 0.25:
+            stump_target = "MIDDLE STUMP"
+        elif offset_from_center < 0:
+            stump_target = "TOP OF OFF STUMP"
+        else:
+            stump_target = "LEG STUMP"
+    elif wickets == "UMPIRE'S CALL":
+        stump_target = "CLIPPING BAILS"
+    else:
+        stump_target = "MISSING STUMPS"
+
     normalized_points = [{"x": round(float(pt[0] / vid_width), 3), "y": round(float(pt[1] / vid_height), 3)} for pt in tracer_points]
+
+    print(f"[BallTracking] TV METRICS: Release={release_speed} km/h, OffPitch={pitch_speed} km/h | Length={length_category} | Target={stump_target}")
 
     return {
         "speed": speed_kmh,
+        "release_speed": release_speed,
+        "pitch_speed": pitch_speed,
+        "length_category": length_category,
+        "stump_target": stump_target,
         "swing": swing_deg,
         "turn": turn_deg,
         "videoUrl": video_url,
@@ -290,7 +326,8 @@ def process_ball_tracking(video_path: str):
         "hawkeye": {
             "pitching": pitching,
             "impact": impact,
-            "wickets": wickets
+            "wickets": wickets,
+            "stump_target": stump_target
         }
     }
 

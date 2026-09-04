@@ -82,18 +82,31 @@ import math
 
 class LiveDeliveryDetector:
     """
-    Real-time Computer Vision Delivery Detector.
-    Processes live video frames streamed via WebSocket from the phone.
-    Tracks ball entry, flight, and automatically triggers stop when the ball
-    leaves the frame or stops moving (dead ball).
+    Real-time Autonomous Computer Vision Delivery Detector.
+    Supports hands-free operation:
+    1. ARMED: Detects bowler run-up/approach and triggers START_RECORDING.
+    2. WAITING: Detects ball release and entry into flight.
+    3. IN_FLIGHT: Tracks ball trajectory across frames.
+    4. DEAD: Triggers STOP_RECORDING when ball stops or leaves frame.
     """
-    def __init__(self):
-        self.state = "WAITING"  # WAITING -> IN_FLIGHT -> DEAD
+    def __init__(self, autonomous_mode=False):
+        self.autonomous_mode = autonomous_mode
+        self.state = "ARMED" if autonomous_mode else "WAITING"
         self.prev_gray = None
         self.ball_positions = []
         self.in_flight_count = 0
         self.lost_frames = 0
         self.still_frames = 0
+        self.bowler_motion_frames = 0
+
+    def reset_armed(self):
+        self.state = "ARMED"
+        self.ball_positions = []
+        self.in_flight_count = 0
+        self.lost_frames = 0
+        self.still_frames = 0
+        self.bowler_motion_frames = 0
+        print("[AI Autonomous] Camera ARMED and listening for bowler run-up...")
 
     def process_frame(self, frame_bgr):
         h, w = frame_bgr.shape[:2]
@@ -104,7 +117,7 @@ class LiveDeliveryDetector:
 
         if self.prev_gray is None:
             self.prev_gray = gray
-            return "WAITING"
+            return self.state
 
         diff = cv2.absdiff(self.prev_gray, gray)
         self.prev_gray = gray
@@ -114,6 +127,8 @@ class LiveDeliveryDetector:
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
 
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        total_motion_area = sum(cv2.contourArea(c) for c in contours)
 
         moving_balls = []
         for c in contours:
@@ -126,7 +141,21 @@ class LiveDeliveryDetector:
                         (cx, cy), _ = cv2.minEnclosingCircle(c)
                         moving_balls.append((cx, cy, area, circularity))
 
-        if self.state == "WAITING":
+        # 1. ARMED: Looking for bowler starting their delivery run-up
+        if self.state == "ARMED":
+            if total_motion_area > 3500:
+                self.bowler_motion_frames += 1
+                if self.bowler_motion_frames >= 2:
+                    self.state = "WAITING"
+                    self.bowler_motion_frames = 0
+                    print("[AI Autonomous] Bowler run-up detected! Triggering START_RECORDING.")
+                    return "START_RECORDING"
+            else:
+                self.bowler_motion_frames = max(0, self.bowler_motion_frames - 1)
+            return "ARMED"
+
+        # 2. WAITING: Looking for ball release / entering flight
+        elif self.state == "WAITING":
             if len(moving_balls) > 0:
                 best = max(moving_balls, key=lambda b: b[3])
                 self.state = "IN_FLIGHT"
@@ -134,10 +163,11 @@ class LiveDeliveryDetector:
                 self.in_flight_count = 1
                 self.lost_frames = 0
                 self.still_frames = 0
-                print(f"[AI Auto-Stop] Ball entered frame! Tracking in flight...")
+                print(f"[AI Autonomous] Ball in flight! Tracking...")
                 return "BALL_ENTERED"
             return "WAITING"
 
+        # 3. IN_FLIGHT: Tracking ball until it stops or leaves
         elif self.state == "IN_FLIGHT":
             self.in_flight_count += 1
             last_pos = self.ball_positions[-1]
@@ -157,7 +187,7 @@ class LiveDeliveryDetector:
                         
                     if self.still_frames >= 2 and self.in_flight_count >= 3:
                         self.state = "DEAD"
-                        print("[AI Auto-Stop] Ball came to rest. Dead ball detected!")
+                        print("[AI Autonomous] Ball came to rest. Dead ball detected!")
                         return "BALL_STOPPED"
                 else:
                     self.lost_frames += 1
@@ -166,7 +196,7 @@ class LiveDeliveryDetector:
 
             if self.lost_frames >= 2 and self.in_flight_count >= 3:
                 self.state = "DEAD"
-                print("[AI Auto-Stop] Ball left frame. Delivery completed!")
+                print("[AI Autonomous] Ball left frame. Delivery completed!")
                 return "BALL_LEFT"
 
             return "IN_FLIGHT"
@@ -176,31 +206,44 @@ class LiveDeliveryDetector:
 @app.websocket("/ws/live-stream")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    detector = LiveDeliveryDetector()
-    print("[AI Auto-Stop] WebSocket connected for live AI delivery detection.")
+    detector = LiveDeliveryDetector(autonomous_mode=True)
+    print("[AI Autonomous] WebSocket connected for hands-free live stream.")
     
     try:
         while True:
             data = await websocket.receive_json()
-            if data.get("type") == "frame":
+            msg_type = data.get("type")
+            
+            if msg_type == "ARM":
+                detector.reset_armed()
+                await websocket.send_json({"action": "ARMED_CONFIRMED"})
+                continue
+                
+            if msg_type == "frame":
                 img_data = base64.b64decode(data["data"])
                 np_arr = np.frombuffer(img_data, np.uint8)
                 img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
                 
                 if img is not None:
                     status = detector.process_frame(img)
-                    if status in ["BALL_STOPPED", "BALL_LEFT"]:
-                        print(f"[AI Auto-Stop] Triggering STOP_RECORDING action ({status})")
+                    if status == "START_RECORDING":
+                        print("[AI Autonomous] Sending START_RECORDING to phone")
+                        await websocket.send_json({
+                            "action": "START_RECORDING",
+                            "reason": "bowler_run_up"
+                        })
+                    elif status in ["BALL_STOPPED", "BALL_LEFT"]:
+                        print(f"[AI Autonomous] Sending STOP_RECORDING ({status}) to phone")
                         await websocket.send_json({
                             "action": "STOP_RECORDING",
                             "reason": status,
                             "flight_frames": detector.in_flight_count
                         })
-                        break
+                        detector.reset_armed()
     except WebSocketDisconnect:
-        print("[AI Auto-Stop] WebSocket client disconnected.")
+        print("[AI Autonomous] Client disconnected.")
     except Exception as e:
-        print(f"[AI Auto-Stop] Error: {e}")
+        print(f"[AI Autonomous] Error: {e}")
 
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
@@ -208,22 +251,20 @@ async def upload_video(file: UploadFile = File(...)):
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # 1. Run Ball Tracking (OpenCV + HawkEye Physics) — returns speed, swing, turn, hawkeye, videoUrl
     tracking_data = process_ball_tracking(file_location)
-    
-    # 2. Run Biomechanics (MediaPipe Pose)
     biomechanics_data = process_biomechanics(file_location)
     
-    # DO NOT delete the original video — the tracer video is saved alongside it.
-    # Clean up original only (tracer has a _processed suffix)
     try:
         os.remove(file_location)
     except:
         pass
     
-    # Return ALL real data directly at the root level so the phone can read it
     return {
         "speed": tracking_data.get("speed", 0),
+        "release_speed": tracking_data.get("release_speed", 0),
+        "pitch_speed": tracking_data.get("pitch_speed", 0),
+        "length_category": tracking_data.get("length_category", "UNKNOWN"),
+        "stump_target": tracking_data.get("stump_target", "UNKNOWN"),
         "swing": tracking_data.get("swing", 0),
         "turn": tracking_data.get("turn", 0),
         "videoUrl": tracking_data.get("videoUrl", None),
@@ -231,7 +272,8 @@ async def upload_video(file: UploadFile = File(...)):
         "hawkeye": tracking_data.get("hawkeye", {
             "pitching": "UNKNOWN",
             "impact": "UNKNOWN",
-            "wickets": "UNKNOWN"
+            "wickets": "UNKNOWN",
+            "stump_target": "UNKNOWN"
         }),
         "isNoBall": biomechanics_data.get("isNoBall", False),
         "shotType": biomechanics_data.get("shotType", "UNKNOWN")

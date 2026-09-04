@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Alert, Modal } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Alert, Modal, Vibration } from 'react-native';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
-import { Check, Target, LogOut, AlertTriangle, X, Trophy } from 'lucide-react-native';
+import { Check, Target, LogOut, AlertTriangle, X, Trophy, Bot, RefreshCw } from 'lucide-react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, Line, Polyline } from 'react-native-svg';
 import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -48,6 +48,11 @@ export default function LiveCameraScreen({ route, navigation }) {
   const [showTrail, setShowTrail] = useState(false);
   const [recentStats, setRecentStats] = useState(null);
 
+  // Autonomous Hands-Free Mode
+  const [isAutonomous, setIsAutonomous] = useState(true);
+  const [autoCountdown, setAutoCountdown] = useState(null);
+  const autoCountdownTimerRef = useRef(null);
+
   // Umpire AI & DRS
   const [isNoBall, setIsNoBall] = useState(false);
   const [isFreeHit, setIsFreeHit] = useState(false);
@@ -65,7 +70,7 @@ export default function LiveCameraScreen({ route, navigation }) {
   }, []);
 
   // RECORDING SETTINGS
-  const [recordingDuration, setRecordingDuration] = useState(5);
+  const [recordingDuration, setRecordingDuration] = useState(6);
   const [showSettings, setShowSettings] = useState(false);
 
   // AUTO-SAVE MATCH STATE
@@ -86,27 +91,24 @@ export default function LiveCameraScreen({ route, navigation }) {
             strikerName,
             nonStrikerName,
             yetToBat,
-            targetScore
+            targetScore,
+            matchHistory
           };
-          
           const existing = await AsyncStorage.getItem('saved_matches');
-          let matches = existing ? JSON.parse(existing) : [];
-          
-          // Update existing or add new
-          const idx = matches.findIndex(m => m.id === matchData.id);
-          if (idx >= 0) matches[idx] = matchData;
-          else matches.unshift(matchData);
-          
-          await AsyncStorage.setItem('saved_matches', JSON.stringify(matches));
+          let list = existing ? JSON.parse(existing) : [];
+          list = list.filter(m => m.id !== matchId);
+          list.unshift(matchData);
+          await AsyncStorage.setItem('saved_matches', JSON.stringify(list));
         } catch (e) {
-          console.log('Auto-save failed:', e);
+          console.log('Auto-save error:', e);
         }
       };
       saveMatch();
     }
-  }, [score, innings, battingTeam, activeStriker, strikerName, nonStrikerName]);
+  }, [score, matchHistory]);
 
   const handleTap = (e) => {
+    if (engineState !== 'IDLE') return;
     const { pageX, pageY } = e.nativeEvent;
     if (mode === 'CALIBRATE_STRIKER' && strikerStumps.length < 3) {
       setStrikerStumps([...strikerStumps, { x: pageX, y: pageY }]);
@@ -136,68 +138,90 @@ export default function LiveCameraScreen({ route, navigation }) {
     }, 40); // 40ms per coordinate for smooth animated ball flight
   };
 
+  // Continuous Autonomous Stream
   const connectAILiveStream = () => {
     const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
     const WS_URL = API_URL.replace('http', 'ws').replace('https', 'wss') + '/ws/live-stream';
     
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    
     wsRef.current = new WebSocket(WS_URL);
     
-    // Safety max timer only in case bowler never bowls (12 seconds)
-    fallbackTimerRef.current = setTimeout(() => {
-      console.log("[Auto-Stop] Max safety recording limit reached.");
-      stopRecording();
-    }, Math.max(recordingDuration, 8) * 1000);
-    
     wsRef.current.onopen = () => {
-      console.log("[AI Stream] Connected to backend WebSocket for live delivery detection.");
+      console.log("[AI Autonomous] Connected to backend WebSocket.");
       let isCapturing = false;
       const streamInterval = setInterval(async () => {
         if (isCapturing) return;
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && cameraRef.current) {
           try {
             isCapturing = true;
-            // takeSnapshot grabs the preview directly from the GPU, bypassing the startRecording lock!
+            // takeSnapshot grabs preview frame from GPU, bypassing Vision Camera video lock
             const photo = await cameraRef.current.takeSnapshot({ quality: 25 });
             const photoPath = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
             const base64 = await FileSystem.readAsStringAsync(photoPath, { encoding: FileSystem.EncodingType.Base64 });
             wsRef.current.send(JSON.stringify({ type: 'frame', data: base64 }));
           } catch (e) {
-            // Snapshot dropped or busy
+            // Drop frame if busy
           } finally {
             isCapturing = false;
           }
-        } else {
+        } else if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
           clearInterval(streamInterval);
         }
-      }, 120); // Fast ~8 FPS snapshot capture for real-time delivery detection
+      }, 140); // ~7 FPS continuous snapshot stream
       wsRef.current.streamInterval = streamInterval;
     };
 
     wsRef.current.onmessage = async (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (msg.action === 'STOP_RECORDING') {
-          console.log(`[AI Auto-Stop] AI detected dead ball (${msg.reason})! Stopping recording automatically.`);
-          if (wsRef.current?.streamInterval) clearInterval(wsRef.current.streamInterval);
-          if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
-          wsRef.current.close();
-          await stopRecording();
+        if (msg.action === 'START_RECORDING') {
+          console.log("[AI Autonomous] AI detected run-up! Starting recording automatically.");
+          try { Vibration.vibrate(80); } catch (_) {}
+          startRecordingInternal();
+        } else if (msg.action === 'STOP_RECORDING') {
+          console.log(`[AI Autonomous] AI detected dead delivery (${msg.reason})! Stopping recording.`);
+          try { Vibration.vibrate([0, 80, 80, 80]); } catch (_) {}
+          await stopRecordingInternal();
         }
       } catch (err) {
-        console.log("[AI Auto-Stop] Parse error:", err);
+        console.log("[AI Autonomous] Message parse error:", err);
       }
     };
   };
 
-  const startRecording = async () => {
+  // Connect autonomous stream once in LIVE mode
+  useEffect(() => {
+    if (mode === 'LIVE') {
+      connectAILiveStream();
+    }
+    return () => {
+      if (wsRef.current) {
+        if (wsRef.current.streamInterval) clearInterval(wsRef.current.streamInterval);
+        if (wsRef.current.readyState === WebSocket.OPEN) wsRef.current.close();
+      }
+      if (autoCountdownTimerRef.current) clearInterval(autoCountdownTimerRef.current);
+    };
+  }, [mode]);
+
+  const startRecordingInternal = async () => {
     if (!cameraRef.current) return;
     setEngineState('RECORDING_CLIP');
     setShowTrail(false);
     if (animIntervalRef.current) clearInterval(animIntervalRef.current);
+    if (autoCountdownTimerRef.current) clearInterval(autoCountdownTimerRef.current);
+    setAutoCountdown(null);
     
-    try {
-      connectAILiveStream(); // Hook up to true AI for automatic stop
+    // Safety max timer in case AI misses delivery
+    if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+    fallbackTimerRef.current = setTimeout(() => {
+      console.log("[Auto-Stop] Max safety recording limit reached.");
+      stopRecordingInternal();
+    }, Math.max(recordingDuration, 8) * 1000);
 
+    try {
       cameraRef.current.startRecording({
         onRecordingFinished: async (video) => {
           setEngineState('ANALYZING');
@@ -222,28 +246,48 @@ export default function LiveCameraScreen({ route, navigation }) {
     }
   };
 
-  const stopRecording = async () => {
+  const stopRecordingInternal = async () => {
+    if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
     if (cameraRef.current) {
       try {
-        if (wsRef.current) {
-          if (wsRef.current.streamInterval) clearInterval(wsRef.current.streamInterval);
-          if (wsRef.current.readyState === WebSocket.OPEN) wsRef.current.close();
-        }
-        if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
         await cameraRef.current.stopRecording();
       } catch (e) {
-        console.log(e);
+        console.log('Stop recording error:', e);
       }
     }
   };
 
   const [showSpeedFlash, setShowSpeedFlash] = useState(false);
 
+  // Trigger Hands-Free Auto-Rearm Countdown
+  const triggerAutoRearm = () => {
+    let count = 4;
+    setAutoCountdown(count);
+    if (autoCountdownTimerRef.current) clearInterval(autoCountdownTimerRef.current);
+    autoCountdownTimerRef.current = setInterval(() => {
+      count -= 1;
+      if (count <= 0) {
+        clearInterval(autoCountdownTimerRef.current);
+        setAutoCountdown(null);
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(JSON.stringify({ type: 'ARM' }));
+        }
+        setEngineState('IDLE');
+      } else {
+        setAutoCountdown(count);
+      }
+    }, 1000);
+  };
+
   const handleBackendResponse = (aiData) => {
-    // Store ALL real data from the backend including live trajectory points
+    // Store ALL real TV broadcast metrics from the backend
     const points = aiData.trajectory_points || [];
     setRecentStats({
       speed: aiData.speed,
+      release_speed: aiData.release_speed || aiData.speed,
+      pitch_speed: aiData.pitch_speed || Math.round(aiData.speed * 0.86),
+      length_category: aiData.length_category || "GOOD LENGTH",
+      stump_target: aiData.stump_target || "MIDDLE STUMP",
       swing: aiData.swing,
       turn: aiData.turn,
       videoUrl: aiData.videoUrl,
@@ -272,6 +316,9 @@ export default function LiveCameraScreen({ route, navigation }) {
       setIsFreeHit(false);
       if (sessionType === 'PRACTICE') {
         setEngineState('IDLE');
+        if (isAutonomous) {
+          triggerAutoRearm();
+        }
       } else {
         setEngineState('SCORING');
       }
@@ -526,32 +573,80 @@ export default function LiveCameraScreen({ route, navigation }) {
           </View>
         )}
 
+        {/* SCREEN RECORDING RED BORDER */}
+        {engineState === 'RECORDING_CLIP' && (
+          <View style={styles.screenRecordingBorder} pointerEvents="none">
+            <View style={styles.recordingOverlayFloating}>
+              <View style={styles.redDot} />
+              <Text style={styles.recordingText}>AI RECORDING DELIVERY</Text>
+            </View>
+          </View>
+        )}
+
+        {/* AUTONOMOUS AUTO-REARM COUNTDOWN BANNER */}
+        {autoCountdown !== null && (
+          <View style={styles.countdownBanner} pointerEvents="none">
+            <RefreshCw color="#00e676" size={18} />
+            <Text style={styles.countdownText}>Next Ball Armed in {autoCountdown}s...</Text>
+          </View>
+        )}
+
         {mode === 'LIVE' && !isNoBall && (
           <>
-            {/* END MATCH BUTTON */}
-            <TouchableOpacity style={styles.endMatchBtn} onPress={() => {
-              Alert.alert('End Match', 'Are you sure you want to end and analyze this match?', [
-                {text: 'Cancel', style: 'cancel'},
-                {text: 'End', style: 'destructive', onPress: () => {
-                  AsyncStorage.removeItem('saved_matches');
-                  navigation.replace('PostMatchAnalysis', { matchDetails, score, matchHistory }); 
-                }}
-              ]);
-            }}>
-              <LogOut color="#fff" size={20} />
-              <Text style={styles.endMatchText}>END MATCH</Text>
-            </TouchableOpacity>
+            {/* TOP CONTROLS: END MATCH & AUTONOMOUS TOGGLE */}
+            <View style={styles.topControlRow}>
+              <TouchableOpacity style={styles.endMatchBtn} onPress={() => {
+                Alert.alert('End Match', 'Are you sure you want to end and analyze this match?', [
+                  {text: 'Cancel', style: 'cancel'},
+                  {text: 'End', style: 'destructive', onPress: () => {
+                    AsyncStorage.removeItem('saved_matches');
+                    navigation.replace('PostMatchAnalysis', { matchDetails, score, matchHistory }); 
+                  }}
+                ]);
+              }}>
+                <LogOut color="#fff" size={16} />
+                <Text style={styles.endMatchText}>END</Text>
+              </TouchableOpacity>
 
-            {/* RECENT STATS WIDGET */}
+              <TouchableOpacity 
+                style={[styles.autoModeBtn, isAutonomous ? styles.autoModeBtnActive : styles.autoModeBtnInactive]} 
+                onPress={() => setIsAutonomous(!isAutonomous)}
+              >
+                <Bot color={isAutonomous ? '#00e676' : '#888'} size={16} />
+                <Text style={[styles.autoModeText, { color: isAutonomous ? '#00e676' : '#888' }]}>
+                  {isAutonomous ? 'AI HANDS-FREE: ON' : 'MANUAL'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* RECENT STATS WIDGET WITH BROADCAST DUAL-SPEED */}
             {recentStats && engineState !== 'RECORDING_CLIP' && engineState !== 'ANALYZING' && (
               <View style={styles.recentStatsWidget}>
-                <Text style={styles.recentStatsTitle}>LAST BALL</Text>
+                <View style={styles.statHeaderRow}>
+                  <Text style={styles.recentStatsTitle}>LAST BALL</Text>
+                  {recentStats.length_category && (
+                    <View style={[styles.lengthTag, { 
+                      backgroundColor: recentStats.length_category === 'YORKER' ? '#ff9100' : 
+                                       recentStats.length_category === 'GOOD LENGTH' ? '#00e676' : 
+                                       recentStats.length_category === 'FULL LENGTH' ? '#2979ff' : '#ff1744' 
+                    }]}>
+                      <Text style={styles.lengthTagText}>{recentStats.length_category}</Text>
+                    </View>
+                  )}
+                </View>
+
                 {recentStats.speed > 0 ? (
                   <>
                     <View style={styles.statLine}>
-                      <Text style={styles.statLineLabel}>Speed:</Text>
-                      <Text style={styles.statLineValue}>{recentStats.speed} km/h</Text>
+                      <Text style={styles.statLineLabel}>Release:</Text>
+                      <Text style={styles.statLineValue}>{recentStats.release_speed || recentStats.speed} km/h</Text>
                     </View>
+                    {recentStats.pitch_speed && (
+                      <View style={styles.statLine}>
+                        <Text style={styles.statLineLabel}>Off Pitch:</Text>
+                        <Text style={[styles.statLineValue, { color: '#00e676' }]}>{recentStats.pitch_speed} km/h</Text>
+                      </View>
+                    )}
                     <View style={styles.statLine}>
                       <Text style={styles.statLineLabel}>Swing:</Text>
                       <Text style={styles.statLineValue}>{recentStats.swing}°</Text>
@@ -560,6 +655,9 @@ export default function LiveCameraScreen({ route, navigation }) {
                       <Text style={styles.statLineLabel}>Turn:</Text>
                       <Text style={styles.statLineValue}>{recentStats.turn}°</Text>
                     </View>
+                    {recentStats.stump_target && (
+                      <Text style={styles.stumpTargetText}>🎯 {recentStats.stump_target}</Text>
+                    )}
                   </>
                 ) : (
                   <View style={{ marginBottom: 8 }}>
@@ -590,6 +688,16 @@ export default function LiveCameraScreen({ route, navigation }) {
               </View>
             )}
 
+            {/* MANUAL BOWL TRIGGER (IF NOT AUTONOMOUS) */}
+            {engineState === 'IDLE' && !isAutonomous && (
+              <View style={styles.actionBottomBar}>
+                <TouchableOpacity style={styles.recordBtn} onPress={startRecordingInternal}>
+                  <View style={styles.recordBtnInner} />
+                  <Text style={styles.recordBtnText}>START DELIVERY</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             {/* ADVANCED SCOREBOARD */}
             {sessionType === 'MATCH' && (
               <View style={styles.scoreboardContainer}>
@@ -609,38 +717,16 @@ export default function LiveCameraScreen({ route, navigation }) {
                       <Text style={styles.scoreBoxText}>{r}</Text>
                     </TouchableOpacity>
                   ))}
-                  <TouchableOpacity style={[styles.scoreBox, styles.wicketBox]} onPress={() => handleScore(0, 'WICKET')}>
+                  <TouchableOpacity style={[styles.scoreBox, styles.wicketBox]} onPress={() => handleScore('W', 'WICKET')}>
                     <Text style={styles.scoreBoxText}>W</Text>
                   </TouchableOpacity>
                 </View>
-              </View>
-            )}
-
-            {engineState === 'RECORDING_CLIP' && (
-              <View style={styles.actionBottomBar}>
-                <View style={styles.recordingOverlayFloating}>
-                  <View style={styles.redDot} />
-                  <Text style={styles.recordingText}>RECORDING...</Text>
-                </View>
-                <TouchableOpacity style={styles.stopBtn} onPress={stopRecording}>
-                  <View style={styles.stopBtnInner} />
-                  <Text style={styles.stopBtnText}>BALL DEAD (STOP)</Text>
-                </TouchableOpacity>
               </View>
             )}
             
             {engineState === 'ANALYZING' && (
               <View style={[styles.recordingOverlay, {backgroundColor: 'rgba(41, 121, 255, 0.9)'}]}>
                 <Text style={[styles.recordingText, {color: '#fff'}]}>UPLOADING TO AI ENGINE...</Text>
-              </View>
-            )}
-
-            {engineState === 'IDLE' && (
-              <View style={styles.actionBottomBar}>
-                <TouchableOpacity style={styles.recordBtn} onPress={startRecording}>
-                  <View style={styles.recordBtnInner} />
-                  <Text style={styles.recordBtnText}>START RUN-UP</Text>
-                </TouchableOpacity>
               </View>
             )}
           </>
@@ -666,17 +752,28 @@ const styles = StyleSheet.create({
   speedFlashOverlay: { position: 'absolute', top: '35%', alignSelf: 'center', backgroundColor: 'rgba(0, 230, 118, 0.9)', paddingVertical: 20, paddingHorizontal: 40, borderRadius: 20, borderWidth: 4, borderColor: '#fff', elevation: 20 },
   speedFlashText: { color: '#000', fontSize: 72, fontWeight: '900', fontStyle: 'italic', textAlign: 'center' },
   
-  scoreboardContainer: { position: 'absolute', top: 50, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.85)', paddingVertical: 10, paddingHorizontal: 30, borderRadius: 30, borderWidth: 1, borderColor: '#444' },
+  screenRecordingBorder: { position: 'absolute', top: 0, bottom: 0, left: 0, right: 0, borderWidth: 4, borderColor: '#ff1744', zIndex: 8 },
+  recordingOverlayFloating: { position: 'absolute', top: 20, alignSelf: 'center', flexDirection: 'row', backgroundColor: 'rgba(255, 23, 68, 0.95)', paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, alignItems: 'center' },
+  redDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#fff', marginRight: 8 },
+  recordingText: { color: '#fff', fontWeight: '900', fontSize: 12, letterSpacing: 1 },
+
+  countdownBanner: { position: 'absolute', bottom: 120, alignSelf: 'center', flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.85)', paddingVertical: 12, paddingHorizontal: 22, borderRadius: 25, borderWidth: 1.5, borderColor: '#00e676', alignItems: 'center', zIndex: 12 },
+  countdownText: { color: '#00e676', fontWeight: 'bold', fontSize: 14, marginLeft: 8 },
+
+  topControlRow: { position: 'absolute', top: 50, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', zIndex: 10 },
+  endMatchBtn: { backgroundColor: 'rgba(255, 23, 68, 0.8)', flexDirection: 'row', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, alignItems: 'center' },
+  endMatchText: { color: '#fff', fontWeight: 'bold', marginLeft: 6, fontSize: 12 },
+  autoModeBtn: { flexDirection: 'row', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, alignItems: 'center', borderWidth: 1 },
+  autoModeBtnActive: { backgroundColor: 'rgba(0, 230, 118, 0.2)', borderColor: '#00e676' },
+  autoModeBtnInactive: { backgroundColor: 'rgba(0,0,0,0.6)', borderColor: '#555' },
+  autoModeText: { fontWeight: 'bold', marginLeft: 6, fontSize: 12 },
+
+  scoreboardContainer: { position: 'absolute', top: 95, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.85)', paddingVertical: 8, paddingHorizontal: 24, borderRadius: 25, borderWidth: 1, borderColor: '#444' },
   scoreTopRow: { flexDirection: 'row', alignItems: 'center' },
-  mainScore: { color: '#fff', fontSize: 36, fontWeight: '900' },
-  overs: { color: '#888', fontSize: 18, marginLeft: 10, fontWeight: 'bold' },
-  
-  triggerBtn: { position: 'absolute', bottom: 40, alignSelf: 'center', flexDirection: 'row', backgroundColor: 'rgba(0, 230, 118, 0.2)', paddingVertical: 15, paddingHorizontal: 30, borderRadius: 30, borderWidth: 1, borderColor: '#00e676', alignItems: 'center' },
-  triggerText: { color: '#00e676', fontWeight: 'bold', marginLeft: 10 },
+  mainScore: { color: '#fff', fontSize: 32, fontWeight: '900' },
+  overs: { color: '#888', fontSize: 16, marginLeft: 10, fontWeight: 'bold' },
   
   recordingOverlay: { position: 'absolute', top: 50, alignSelf: 'center', flexDirection: 'row', backgroundColor: 'rgba(255, 23, 68, 0.9)', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20, alignItems: 'center' },
-  redDot: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#fff', marginRight: 10 },
-  recordingText: { color: '#fff', fontWeight: '900' },
 
   scoringPopup: { position: 'absolute', bottom: 100, left: 10, right: 10, backgroundColor: '#111', padding: 20, borderRadius: 25 },
   scoreRow: { flexDirection: 'row', justifyContent: 'space-between' },
@@ -684,16 +781,10 @@ const styles = StyleSheet.create({
   scoreBoxText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   wicketBox: { backgroundColor: '#ff1744' },
 
-  actionBottomBar: { position: 'absolute', bottom: 40, left: 0, right: 0, flexDirection: 'column', justifyContent: 'center', alignItems: 'center' },
-  recordBtn: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.6)', paddingRight: 25, borderRadius: 40, borderWidth: 2, borderColor: '#fff', alignItems: 'center' },
-  recordBtnInner: { width: 60, height: 60, borderRadius: 30, backgroundColor: '#ff1744', margin: 5 },
-  recordBtnText: { color: '#fff', fontWeight: '900', fontSize: 18, marginLeft: 15 },
-  
-  stopBtn: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.8)', paddingRight: 25, borderRadius: 15, borderWidth: 2, borderColor: '#ff1744', alignItems: 'center', marginTop: 15 },
-  stopBtnInner: { width: 40, height: 40, borderRadius: 5, backgroundColor: '#ff1744', margin: 10 },
-  stopBtnText: { color: '#ff1744', fontWeight: '900', fontSize: 18, marginLeft: 10 },
-  
-  recordingOverlayFloating: { flexDirection: 'row', backgroundColor: 'rgba(255, 23, 68, 0.9)', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20, alignItems: 'center' },
+  actionBottomBar: { position: 'absolute', bottom: 40, left: 0, right: 0, justifyContent: 'center', alignItems: 'center' },
+  recordBtn: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.7)', paddingRight: 25, borderRadius: 40, borderWidth: 2, borderColor: '#00e676', alignItems: 'center' },
+  recordBtnInner: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#00e676', margin: 5 },
+  recordBtnText: { color: '#fff', fontWeight: '900', fontSize: 16, marginLeft: 10 },
   
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.8)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#1e1e1e', padding: 25, borderRadius: 20 },
@@ -718,14 +809,15 @@ const styles = StyleSheet.create({
   drsCloseBtn: { backgroundColor: '#ff1744', marginTop: 25, paddingVertical: 15, borderRadius: 10 },
   drsCloseText: { color: '#fff', textAlign: 'center', fontWeight: '900', fontSize: 18, letterSpacing: 1 },
 
-  endMatchBtn: { position: 'absolute', top: 50, left: 20, backgroundColor: 'rgba(255, 23, 68, 0.8)', flexDirection: 'row', paddingVertical: 10, paddingHorizontal: 15, borderRadius: 20, alignItems: 'center' },
-  endMatchText: { color: '#fff', fontWeight: 'bold', marginLeft: 8 },
-
-  recentStatsWidget: { position: 'absolute', top: 120, right: 20, backgroundColor: 'rgba(0,0,0,0.7)', padding: 15, borderRadius: 15, borderWidth: 1, borderColor: '#333' },
-  recentStatsTitle: { color: '#00e676', fontWeight: '900', marginBottom: 10, textAlign: 'center', fontSize: 16 },
-  statLine: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 5, width: 120 },
-  statLineLabel: { color: '#aaa', fontWeight: 'bold' },
-  statLineValue: { color: '#fff', fontWeight: 'bold' },
-  drsWidgetBtn: { flexDirection: 'row', backgroundColor: '#2979ff', padding: 8, borderRadius: 8, marginTop: 10, justifyContent: 'center', alignItems: 'center' },
-  drsWidgetBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 12, marginLeft: 5 }
+  recentStatsWidget: { position: 'absolute', top: 120, right: 15, backgroundColor: 'rgba(0,0,0,0.85)', padding: 14, borderRadius: 16, borderWidth: 1, borderColor: '#333', width: 160 },
+  statHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  recentStatsTitle: { color: '#00e676', fontWeight: '900', fontSize: 14 },
+  lengthTag: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6 },
+  lengthTagText: { color: '#000', fontSize: 9, fontWeight: '900' },
+  statLine: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  statLineLabel: { color: '#aaa', fontWeight: 'bold', fontSize: 12 },
+  statLineValue: { color: '#fff', fontWeight: 'bold', fontSize: 12 },
+  stumpTargetText: { color: '#ffea00', fontWeight: 'bold', fontSize: 11, marginTop: 4, textAlign: 'center' },
+  drsWidgetBtn: { flexDirection: 'row', backgroundColor: '#2979ff', padding: 8, borderRadius: 8, marginTop: 8, justifyContent: 'center', alignItems: 'center' },
+  drsWidgetBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 11, marginLeft: 5 }
 });
