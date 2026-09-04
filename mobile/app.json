@@ -6,11 +6,13 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
+    "jsEngine": "jsc",
     "ios": {
       "supportsTablet": true,
       "jsEngine": "jsc"
     },
     "android": {
+      "jsEngine": "jsc",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -25,7 +27,7 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Allow CricCoach to access your camera."
+          "cameraPermission": "Allow CricRN to access your camera."
         }
       ]
     ]

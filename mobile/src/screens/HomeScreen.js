@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, Dimensions, ImageBackground } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, StatusBar, Dimensions, ImageBackground, Image } from 'react-native';
 import { Play, Calendar, Trophy, Clock, User } from 'lucide-react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFocusEffect } from '@react-navigation/native';
@@ -38,8 +38,14 @@ export default function HomeScreen({ navigation }) {
       <SafeAreaView style={{flex:1}}>
         <View style={styles.header}>
           <View>
-            <Text style={styles.greeting}>Welcome Back,</Text>
-            <Text style={styles.coachName}>Coach Devarsh</Text>
+            <View style={styles.brandingRow}>
+              <Image source={require('../../assets/cricrn_logo.jpg')} style={styles.logo} />
+              <Text style={styles.brandTitle}>CricRN</Text>
+            </View>
+            <View>
+              <Text style={styles.greeting}>Welcome Back,</Text>
+              <Text style={styles.coachName}>Coach Devarsh</Text>
+            </View>
           </View>
           <TouchableOpacity style={styles.profileBtn} onPress={() => navigation.navigate('PlayerProfile')}>
             <User color="#000" size={24} />
@@ -124,6 +130,9 @@ export default function HomeScreen({ navigation }) {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 24, paddingTop: 40, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
+  brandingRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 15 },
+  logo: { width: 36, height: 36, borderRadius: 10, marginRight: 10 },
+  brandTitle: { fontSize: 24, fontWeight: '900', color: '#00e676', letterSpacing: 1 },
   greeting: { fontSize: 16, color: 'rgba(255,255,255,0.6)', letterSpacing: 1 },
   coachName: { fontSize: 32, fontWeight: 'bold', color: '#fff', marginTop: 4 },
   profileBtn: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#00e676', justifyContent: 'center', alignItems: 'center', shadowColor: '#00e676', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.5, shadowRadius: 8 },

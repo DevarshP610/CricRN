@@ -1,42 +1,51 @@
 import cv2
 import numpy as np
-from ultralytics import YOLO
 import math
-
-# Load the pretrained YOLOv8 model (using the nano model for speed)
-# In production, this would be a custom-trained model for cricket balls and stumps.
-try:
-    model = YOLO("yolov8n.pt")
-except:
-    model = None
+import os
 
 def process_ball_tracking(video_path: str):
     """
-    Analyzes the video to track the ball using OpenCV and YOLOv8.
-    Applies quadratic curve fitting to estimate HawkEye physics.
+    Analyzes cricket delivery video using OpenCV.
+    Works with ANY ball type: rubber, foam, leather, red, white, pink.
+    Uses motion-based tracking (not color-based) so ball color doesn't matter.
     """
-    print(f"Starting Ball Tracking on {video_path}...")
+    print(f"[BallTracking] Starting analysis on {video_path}...")
     
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        print("Error: Cannot open video.")
-        return generate_mock_data()
+        print("[BallTracking] ERROR: Cannot open video.")
+        return _fallback("Cannot open video")
 
     fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps == 0 or math.isnan(fps):
+    if fps == 0 or fps != fps:  # NaN check
         fps = 30.0
 
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    vid_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vid_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
-    # 1. Detect Pitch & Stumps using YOLO (Persons & objects)
-    # We will assume standard camera angle from behind the bowler or umpire.
-    stump_y = height * 0.8  # Approximate baseline for stumps
+    print(f"[BallTracking] Video: {vid_width}x{vid_height} @ {fps}fps, {total_frames} frames")
+
+    if vid_width == 0 or vid_height == 0:
+        cap.release()
+        return _fallback("Invalid video dimensions")
+
+    # Scale-aware contour area thresholds
+    # A cricket ball at distance appears as roughly 0.1-2% of frame area
+    frame_area = vid_width * vid_height
+    min_ball_area = max(3, int(frame_area * 0.00005))
+    max_ball_area = max(500, int(frame_area * 0.02))
     
-    # 2. Background Subtractor for fast-moving ball detection
-    backSub = cv2.createBackgroundSubtractorMOG2(history=50, varThreshold=25, detectShadows=False)
+    print(f"[BallTracking] Ball area range: {min_ball_area} - {max_ball_area} px")
+
+    # Background subtractor — works regardless of ball color
+    backSub = cv2.createBackgroundSubtractorMOG2(
+        history=30, 
+        varThreshold=40, 
+        detectShadows=False
+    )
     
-    ball_trajectory = [] # List of (x, y, frame_idx)
+    ball_trajectory = []  # List of (x, y, frame_idx)
 
     frame_count = 0
     while True:
@@ -46,181 +55,210 @@ def process_ball_tracking(video_path: str):
             
         frame_count += 1
         
-        # Region of Interest: the pitch (middle 50% of screen horizontally, bottom 70% vertically)
-        roi_x1, roi_x2 = int(width * 0.25), int(width * 0.75)
-        roi_y1, roi_y2 = int(height * 0.30), height
-        
-        roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
-        
-        if roi.size == 0:
+        # Skip first few frames to let background model initialize
+        if frame_count < 5:
+            backSub.apply(frame)
             continue
-            
-        fgMask = backSub.apply(roi)
+
+        # Apply background subtraction to the full frame
+        fgMask = backSub.apply(frame)
         
-        # Morphological operations to remove noise
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        # Clean up noise
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         fgMask = cv2.morphologyEx(fgMask, cv2.MORPH_OPEN, kernel)
+        fgMask = cv2.morphologyEx(fgMask, cv2.MORPH_CLOSE, kernel)
         
         contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        best_center = None
+        # Find the best ball-like contour
+        best_candidate = None
+        best_score = 0
+        
         for contour in contours:
             area = cv2.contourArea(contour)
-            # A cricket ball is relatively small but fast
-            if 5 < area < 200: 
-                (x, y), radius = cv2.minEnclosingCircle(contour)
-                # Ensure it's somewhat circular
-                circularity = 4 * math.pi * (area / (cv2.arcLength(contour, True)**2 + 1e-6))
-                if circularity > 0.4:
-                    best_center = (int(x) + roi_x1, int(y) + roi_y1, frame_count)
-                    break # Take the first good candidate
+            if area < min_ball_area or area > max_ball_area:
+                continue
+                
+            perimeter = cv2.arcLength(contour, True)
+            if perimeter == 0:
+                continue
+                
+            # Circularity: 1.0 = perfect circle, lower = elongated
+            circularity = 4 * math.pi * area / (perimeter * perimeter)
+            
+            if circularity > 0.3:  # Reasonable threshold for a ball blob
+                # Score = higher circularity + smaller area (ball is small) 
+                score = circularity * (1.0 / (area + 1))
+                if score > best_score:
+                    best_score = score
+                    (cx, cy), radius = cv2.minEnclosingCircle(contour)
+                    best_candidate = (int(cx), int(cy), frame_count)
         
-        if best_center:
-            ball_trajectory.append(best_center)
+        if best_candidate:
+            # Velocity filter: reject jumps that are too large (noise)
+            if len(ball_trajectory) > 0:
+                last = ball_trajectory[-1]
+                dx = abs(best_candidate[0] - last[0])
+                dy = abs(best_candidate[1] - last[1])
+                max_jump = vid_width * 0.15  # Ball shouldn't jump more than 15% of frame width per frame
+                if dx < max_jump and dy < max_jump:
+                    ball_trajectory.append(best_candidate)
+            else:
+                ball_trajectory.append(best_candidate)
 
     cap.release()
     
-    # 3. Hawk-Eye Physics Engine
-    # If we didn't capture enough points, fallback to mock to prevent crash
+    print(f"[BallTracking] Detected {len(ball_trajectory)} trajectory points")
+    
+    # Need at least 5 points for meaningful physics
     if len(ball_trajectory) < 5:
-        print("Warning: Could not extract enough ball trajectory points. Falling back to mock data.")
-        return generate_mock_data()
+        print("[BallTracking] Not enough points. Using fallback.")
+        return _fallback("Not enough tracking points")
 
     # Sort by frame index
     ball_trajectory.sort(key=lambda t: t[2])
     
-    # Extract x, y arrays
-    X = np.array([pt[0] for pt in ball_trajectory])
-    Y = np.array([pt[1] for pt in ball_trajectory])
-    Frames = np.array([pt[2] for pt in ball_trajectory])
+    X = np.array([pt[0] for pt in ball_trajectory], dtype=float)
+    Y = np.array([pt[1] for pt in ball_trajectory], dtype=float)
+    Frames = np.array([pt[2] for pt in ball_trajectory], dtype=float)
     
-    # Detect Bounce (Pitching point) - The point where Y is maximum (lowest point on screen)
-    bounce_idx = np.argmax(Y)
+    # --- PHYSICS ENGINE ---
+    
+    # Bounce point = where Y is maximum (ball is lowest on screen before bouncing up)
+    bounce_idx = int(np.argmax(Y))
     bounce_x = X[bounce_idx]
     bounce_y = Y[bounce_idx]
     
-    # Calculate Speed (Distance over time before bounce)
-    # Assume pitch length is 20.12m. We map screen pixels to real-world meters.
-    pixels_per_meter = height / 22.0  # Very rough approximation
+    # Approximate real-world scale: pitch is ~20m, occupies roughly 60% of vertical frame
+    pixels_per_meter = (vid_height * 0.6) / 20.0
     
+    # SPEED calculation
     if bounce_idx > 0:
-        frames_elapsed = Frames[bounce_idx] - Frames[0]
-        time_elapsed = frames_elapsed / fps
-        distance_px = math.sqrt((X[bounce_idx] - X[0])**2 + (Y[bounce_idx] - Y[0])**2)
-        distance_m = distance_px / pixels_per_meter
-        speed_mps = distance_m / (time_elapsed + 1e-6)
+        time_elapsed = (Frames[bounce_idx] - Frames[0]) / fps
+        dist_px = np.sqrt((X[bounce_idx] - X[0])**2 + (Y[bounce_idx] - Y[0])**2)
+        dist_m = dist_px / pixels_per_meter
+        speed_mps = dist_m / max(time_elapsed, 0.01)
         speed_kmh = speed_mps * 3.6
-        # Cap speed to realistic bounds
-        speed_kmh = min(max(speed_kmh, 70.0), 160.0)
+        speed_kmh = float(np.clip(speed_kmh, 60.0, 160.0))
     else:
-        speed_kmh = 135.5
+        speed_kmh = 0.0
 
-    # Calculate Swing (Horizontal deviation before bounce)
-    # Fit a line from release to bounce. If X deviates from straight line, it's swing.
-    swing_degrees = 0.0
+    # SWING calculation (lateral deviation before bounce)
+    swing_deg = 0.0
     if bounce_idx > 2:
-        pre_bounce_X = X[:bounce_idx]
-        pre_bounce_Y = Y[:bounce_idx]
-        p_pre = np.polyfit(pre_bounce_Y, pre_bounce_X, 1) # x = my + c
-        # Calculate angle of the line
-        swing_degrees = math.degrees(math.atan(p_pre[0]))
-        # Normalize to -5 to 5
-        swing_degrees = max(-5.0, min(5.0, swing_degrees))
-
-    # Calculate Turn (Deviation after bounce)
-    turn_degrees = 0.0
-    if bounce_idx < len(X) - 2:
-        post_bounce_X = X[bounce_idx:]
-        post_bounce_Y = Y[bounce_idx:]
-        p_post = np.polyfit(post_bounce_Y, post_bounce_X, 1)
-        turn_degrees = math.degrees(math.atan(p_post[0]))
-        # Subtract pre-bounce angle to find deviation
-        turn_degrees = turn_degrees - swing_degrees
-        turn_degrees = max(-8.0, min(8.0, turn_degrees))
-
-    # DRS Extrapolation (Wickets prediction)
-    # Fit quadratic curve to post-bounce trajectory to predict where it crosses stump line
-    wickets = "MISSING"
-    impact = "UMPIRE'S CALL"
-    pitching = "IN LINE"
-    
-    if bounce_idx < len(X) - 2:
+        pre_X = X[:bounce_idx]
+        pre_Y = Y[:bounce_idx]
         try:
-            # y = ax^2 + bx + c (Predicting X from Y to see horizontal position at stump depth)
-            post_Y = Y[bounce_idx:]
-            post_X = X[bounce_idx:]
-            p3 = np.polyfit(post_Y, post_X, 2)
-            
-            # Predict X position at stump height (stump_y)
-            pred_x_at_stumps = np.polyval(p3, stump_y)
-            
-            # Stumps width in pixels (approximate 22.86cm)
-            stump_width_px = pixels_per_meter * 0.2286
-            center_x = width / 2
-            
-            # Check Wickets
-            if center_x - stump_width_px <= pred_x_at_stumps <= center_x + stump_width_px:
-                wickets = "HITTING"
-            elif center_x - stump_width_px * 1.5 <= pred_x_at_stumps <= center_x + stump_width_px * 1.5:
-                wickets = "UMPIRE'S CALL"
-            else:
-                wickets = "MISSING"
-                
-            # Pitching logic
-            if center_x - stump_width_px <= bounce_x <= center_x + stump_width_px:
-                pitching = "IN LINE"
-            elif bounce_x < center_x - stump_width_px:
-                pitching = "OUTSIDE LEG" if turn_degrees > 0 else "OUTSIDE OFF"
-            else:
-                pitching = "OUTSIDE OFF" if turn_degrees > 0 else "OUTSIDE LEG"
-                
+            coeffs = np.polyfit(pre_Y, pre_X, 1)
+            swing_deg = float(np.clip(math.degrees(math.atan(coeffs[0])), -5.0, 5.0))
         except:
             pass
 
-    # --- NEW: GENERATE RED TRACER VIDEO ---
+    # TURN calculation (deviation after bounce vs before)
+    turn_deg = 0.0
+    if bounce_idx < len(X) - 2:
+        post_X = X[bounce_idx:]
+        post_Y = Y[bounce_idx:]
+        try:
+            coeffs = np.polyfit(post_Y, post_X, 1)
+            post_angle = math.degrees(math.atan(coeffs[0]))
+            turn_deg = float(np.clip(post_angle - swing_deg, -8.0, 8.0))
+        except:
+            pass
+
+    # DRS PREDICTION
+    stump_y = vid_height * 0.85  # Approximate stump line on screen
+    stump_width_px = pixels_per_meter * 0.2286  # 22.86cm stump width
+    center_x = vid_width / 2.0
+    
+    pitching = "IN LINE"
+    impact = "IN LINE"
+    wickets = "MISSING"
+    
+    # Pitching location
+    if bounce_x < center_x - stump_width_px * 2:
+        pitching = "OUTSIDE OFF"
+    elif bounce_x > center_x + stump_width_px * 2:
+        pitching = "OUTSIDE LEG"
+    else:
+        pitching = "IN LINE"
+    
+    # Wickets prediction via quadratic extrapolation
+    if bounce_idx < len(X) - 2:
+        try:
+            post_Y_pts = Y[bounce_idx:]
+            post_X_pts = X[bounce_idx:]
+            p = np.polyfit(post_Y_pts, post_X_pts, 2)
+            pred_x = float(np.polyval(p, stump_y))
+            
+            if center_x - stump_width_px <= pred_x <= center_x + stump_width_px:
+                wickets = "HITTING"
+                impact = "IN LINE"
+            elif center_x - stump_width_px * 1.5 <= pred_x <= center_x + stump_width_px * 1.5:
+                wickets = "UMPIRE'S CALL"
+                impact = "IN LINE"
+            else:
+                wickets = "MISSING"
+                if pred_x < center_x:
+                    impact = "OUTSIDE OFF"
+                else:
+                    impact = "OUTSIDE LEG"
+        except:
+            pass
+
+    # --- GENERATE RED TRACER VIDEO ---
     processed_path = video_path.replace(".mp4", "_processed.mp4")
-    cap = cv2.VideoCapture(video_path)
+    cap2 = cv2.VideoCapture(video_path)
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(processed_path, fourcc, fps, (width, height))
+    out = cv2.VideoWriter(processed_path, fourcc, fps, (vid_width, vid_height))
     
     current_frame = 0
     tracer_points = []
     
     while True:
-        ret, frame = cap.read()
+        ret, frame = cap2.read()
         if not ret:
             break
         current_frame += 1
         
-        # Add point to tracer if it belongs to this frame or earlier
+        # Accumulate tracer points up to current frame
         for pt in ball_trajectory:
-            if pt[2] == current_frame:
+            if pt[2] <= current_frame and (pt[0], pt[1]) not in tracer_points:
                 tracer_points.append((pt[0], pt[1]))
                 
-        # Draw the tracer
+        # Draw the glowing red tracer line
         if len(tracer_points) > 1:
-            pts = np.array(tracer_points, np.int32)
-            pts = pts.reshape((-1, 1, 2))
-            # Draw semi-transparent red line with a glow effect
-            cv2.polylines(frame, [pts], isClosed=False, color=(0, 0, 255), thickness=4)
-            cv2.polylines(frame, [pts], isClosed=False, color=(0, 100, 255), thickness=2) # Inner glow
+            pts = np.array(tracer_points, np.int32).reshape((-1, 1, 2))
+            # Outer glow (thick, darker red)
+            cv2.polylines(frame, [pts], isClosed=False, color=(0, 0, 200), thickness=6)
+            # Core line (bright red)
+            cv2.polylines(frame, [pts], isClosed=False, color=(0, 0, 255), thickness=3)
+            # Inner highlight
+            cv2.polylines(frame, [pts], isClosed=False, color=(100, 100, 255), thickness=1)
             
-            # Draw the current ball position
-            cv2.circle(frame, tracer_points[-1], 6, (0, 0, 255), -1)
-            cv2.circle(frame, tracer_points[-1], 3, (255, 255, 255), -1)
+        # Draw current ball position
+        if len(tracer_points) > 0:
+            last_pt = tracer_points[-1]
+            cv2.circle(frame, last_pt, 8, (0, 0, 255), -1)
+            cv2.circle(frame, last_pt, 4, (255, 255, 255), -1)
 
         out.write(frame)
         
-    cap.release()
+    cap2.release()
     out.release()
     
-    video_filename = processed_path.split("/")[-1].split("\\")[-1]
+    video_filename = os.path.basename(processed_path)
+    video_url = f"http://192.168.2.65:8000/videos/{video_filename}"
+    
+    print(f"[BallTracking] RESULTS: speed={speed_kmh:.1f} km/h, swing={swing_deg:.1f}°, turn={turn_deg:.1f}°")
+    print(f"[BallTracking] DRS: pitching={pitching}, impact={impact}, wickets={wickets}")
+    print(f"[BallTracking] Tracer video: {video_url}")
 
     return {
         "speed": round(speed_kmh, 1),
-        "swing": round(swing_degrees, 1),
-        "turn": round(turn_degrees, 1),
-        "videoUrl": f"http://192.168.2.65:8000/videos/{video_filename}",
+        "swing": round(swing_deg, 1),
+        "turn": round(turn_deg, 1),
+        "videoUrl": video_url,
         "hawkeye": {
             "pitching": pitching,
             "impact": impact,
@@ -228,17 +266,18 @@ def process_ball_tracking(video_path: str):
         }
     }
 
-def generate_mock_data():
-    import random
-    is_spinner = random.choice([True, False])
-    speed = round(random.uniform(75.0, 95.0), 1) if is_spinner else round(random.uniform(130.0, 150.0), 1)
+
+def _fallback(reason: str):
+    """Returns zeros instead of random data so the user knows detection failed."""
+    print(f"[BallTracking] FALLBACK: {reason}")
     return {
-        "speed": speed,
-        "swing": round(random.uniform(-3.5, 3.5), 1) if not is_spinner else 0.0,
-        "turn": round(random.uniform(-5.0, 5.0), 1) if is_spinner else 0.0,
+        "speed": 0.0,
+        "swing": 0.0,
+        "turn": 0.0,
+        "videoUrl": None,
         "hawkeye": {
-            "pitching": random.choice(["IN LINE", "OUTSIDE OFF", "OUTSIDE LEG"]),
-            "impact": random.choice(["IN LINE", "UMPIRE'S CALL"]),
-            "wickets": random.choice(["HITTING", "UMPIRE'S CALL", "MISSING"])
+            "pitching": "DETECTION FAILED",
+            "impact": "DETECTION FAILED",
+            "wickets": "DETECTION FAILED"
         }
     }

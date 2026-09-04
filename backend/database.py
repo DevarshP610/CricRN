@@ -2,7 +2,7 @@ from sqlalchemy import create_engine, Column, Integer, String, Float, JSON, Fore
 from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime
 
-DATABASE_URL = "sqlite:///./criccoach.db"
+DATABASE_URL = "sqlite:///./cricrn.db"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

@@ -4,8 +4,6 @@ import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import { Check, Target, LogOut, AlertTriangle, X, Trophy } from 'lucide-react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, Line } from 'react-native-svg';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as FileSystem from 'expo-file-system';
-import { Video } from 'expo-av';
 
 const { width, height } = Dimensions.get('window');
 
@@ -119,46 +117,15 @@ export default function LiveCameraScreen({ route, navigation }) {
   const wsRef = useRef(null);
   const fallbackTimerRef = useRef(null);
 
-  const connectAILiveStream = () => {
-    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
-    const WS_URL = API_URL.replace('http', 'ws').replace('https', 'wss') + '/ws/live-stream';
-    
-    wsRef.current = new WebSocket(WS_URL);
-    
-    // Safety Net: Hard stop after 8 seconds in case the backend is offline or missed the ball
+  // Auto-stop recording after the configured duration
+  // NOTE: takePhoto() cannot be called during startRecording() on react-native-vision-camera,
+  // so live frame streaming to the backend is not possible during recording.
+  // Instead, the backend analyzes the FULL video after recording stops and returns real data.
+  const autoStopRecording = () => {
     fallbackTimerRef.current = setTimeout(() => {
-      console.log("AI Auto-Stop Fallback triggered!");
+      console.log(`Auto-stop triggered after ${recordingDuration}s`);
       stopRecording();
-    }, 8000);
-    
-    wsRef.current.onopen = () => {
-      // Stream REAL live frames to Python AI
-      const streamInterval = setInterval(async () => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && cameraRef.current) {
-          try {
-            const photo = await cameraRef.current.takePhoto({ qualityPrioritization: 'speed' });
-            const base64 = await FileSystem.readAsStringAsync(photo.path, { encoding: FileSystem.EncodingType.Base64 });
-            wsRef.current.send(JSON.stringify({ type: 'frame', data: base64 }));
-          } catch (e) {
-            console.log("Snapshot failed: ", e);
-          }
-        } else {
-          clearInterval(streamInterval);
-        }
-      }, 500); // 2 FPS to save bandwidth
-      wsRef.current.streamInterval = streamInterval;
-    };
-
-    wsRef.current.onmessage = async (e) => {
-      const msg = JSON.parse(e.data);
-      if (msg.action === 'STOP_RECORDING') {
-        console.log("AI detected dead ball! Stopping.");
-        if (wsRef.current?.streamInterval) clearInterval(wsRef.current.streamInterval);
-        if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
-        wsRef.current.close();
-        await stopRecording();
-      }
-    };
+    }, recordingDuration * 1000);
   };
 
   const startRecording = async () => {
@@ -167,7 +134,7 @@ export default function LiveCameraScreen({ route, navigation }) {
     setShowTrail(false);
     
     try {
-      connectAILiveStream(); // Hook up to AI for automatic stop
+      autoStopRecording(); // Auto-stop after configured duration
 
       cameraRef.current.startRecording({
         onRecordingFinished: async (video) => {
@@ -196,10 +163,7 @@ export default function LiveCameraScreen({ route, navigation }) {
   const stopRecording = async () => {
     if (cameraRef.current) {
       try {
-        if (wsRef.current) {
-          if (wsRef.current.streamInterval) clearInterval(wsRef.current.streamInterval);
-          if (wsRef.current.readyState === WebSocket.OPEN) wsRef.current.close();
-        }
+        if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
         await cameraRef.current.stopRecording();
       } catch (e) {
         console.log(e);
@@ -210,16 +174,16 @@ export default function LiveCameraScreen({ route, navigation }) {
   const [showSpeedFlash, setShowSpeedFlash] = useState(false);
 
   const handleBackendResponse = (aiData) => {
-    if (aiData.hawkeye) {
-      setRecentStats({
-        speed: aiData.speed || '85.2',
-        swing: aiData.swing || '1.2',
-        turn: aiData.turn || '0.5',
-        videoUrl: aiData.videoUrl
-      });
-      setShowSpeedFlash(true);
-      setTimeout(() => setShowSpeedFlash(false), 2000);
-    }
+    // Store ALL real data from the backend — no fake fallbacks
+    setRecentStats({
+      speed: aiData.speed,
+      swing: aiData.swing,
+      turn: aiData.turn,
+      videoUrl: aiData.videoUrl,
+      hawkeye: aiData.hawkeye || {}
+    });
+    setShowSpeedFlash(true);
+    setTimeout(() => setShowSpeedFlash(false), 2000);
 
     if (aiData.isNoBall) {
       setIsNoBall(true);
@@ -291,12 +255,12 @@ export default function LiveCameraScreen({ route, navigation }) {
       ball_number: ((newScore.balls - 1) % 6) + 1,
       bowler: bowlingTeam, // Dummy bowler
       batsman: activeStriker === 1 ? strikerName : nonStrikerName,
-      speed: recentStats?.speed || 135.0,
+      speed: recentStats?.speed || 0.0,
       swing: recentStats?.swing || 0.0,
       turn: recentStats?.turn || 0.0,
-      pitching: recentStats?.hawkeye?.pitching || "IN LINE",
-      impact: recentStats?.hawkeye?.impact || "IN LINE",
-      wickets: recentStats?.hawkeye?.wickets || "MISSING",
+      pitching: recentStats?.hawkeye?.pitching || "UNKNOWN",
+      impact: recentStats?.hawkeye?.impact || "UNKNOWN",
+      wickets: recentStats?.hawkeye?.wickets || "UNKNOWN",
       runs: runs,
       is_wicket: isWicket ? "Yes" : "No"
     }]);
@@ -363,20 +327,20 @@ export default function LiveCameraScreen({ route, navigation }) {
 
             <View style={styles.drsMetricsRow}>
               <Text style={styles.drsMetricLabel}>PITCHING</Text>
-              {drsStep >= 1 ? <Text style={[styles.drsMetricValue, {color: '#00e676'}]}>IN LINE</Text> : <Text style={styles.drsMetricPending}>Checking...</Text>}
+              {drsStep >= 1 ? <Text style={[styles.drsMetricValue, {color: recentStats?.hawkeye?.pitching === 'IN LINE' ? '#00e676' : '#ffea00'}]}>{recentStats?.hawkeye?.pitching || 'N/A'}</Text> : <Text style={styles.drsMetricPending}>Checking...</Text>}
             </View>
             <View style={styles.drsMetricsRow}>
               <Text style={styles.drsMetricLabel}>IMPACT</Text>
-              {drsStep >= 2 ? <Text style={[styles.drsMetricValue, {color: '#00e676'}]}>IN LINE</Text> : <Text style={styles.drsMetricPending}>Checking...</Text>}
+              {drsStep >= 2 ? <Text style={[styles.drsMetricValue, {color: recentStats?.hawkeye?.impact === 'IN LINE' ? '#00e676' : '#ffea00'}]}>{recentStats?.hawkeye?.impact || 'N/A'}</Text> : <Text style={styles.drsMetricPending}>Checking...</Text>}
             </View>
             <View style={styles.drsMetricsRow}>
               <Text style={styles.drsMetricLabel}>WICKETS</Text>
-              {drsStep >= 3 ? <Text style={[styles.drsMetricValue, {color: '#ff1744'}]}>HITTING</Text> : <Text style={styles.drsMetricPending}>Checking...</Text>}
+              {drsStep >= 3 ? <Text style={[styles.drsMetricValue, {color: recentStats?.hawkeye?.wickets === 'HITTING' ? '#ff1744' : '#00e676'}]}>{recentStats?.hawkeye?.wickets || 'N/A'}</Text> : <Text style={styles.drsMetricPending}>Checking...</Text>}
             </View>
 
             {drsStep >= 3 && (
               <TouchableOpacity style={styles.drsCloseBtn} onPress={() => setShowDRSModal(false)}>
-                <Text style={styles.drsCloseText}>DECISION: OUT</Text>
+                <Text style={styles.drsCloseText}>DECISION: {recentStats?.hawkeye?.wickets === 'HITTING' ? 'OUT' : 'NOT OUT'}</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -482,21 +446,17 @@ export default function LiveCameraScreen({ route, navigation }) {
 
             {/* REPLAY MODAL */}
             <Modal visible={showReplayModal} transparent={true} animationType="fade">
-              <View style={styles.modalContainer}>
-                <View style={[styles.drsModalContent, {padding: 0, overflow: 'hidden'}]}>
-                  <TouchableOpacity style={{position: 'absolute', top: 10, right: 10, zIndex: 10, backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 20, padding: 5}} onPress={() => setShowReplayModal(false)}>
-                    <X color="#fff" size={24} />
-                  </TouchableOpacity>
+              <View style={styles.drsBg}>
+                <View style={styles.drsContent}>
+                  <Text style={styles.drsTitle}>BALL TRACER VIDEO</Text>
+                  <Text style={{color: '#aaa', textAlign: 'center', marginBottom: 15}}>The AI has generated a red tracer overlay on your delivery video.</Text>
                   {recentStats?.videoUrl && (
-                    <Video
-                      source={{ uri: recentStats.videoUrl }}
-                      style={{ width: 300, height: 400 }}
-                      useNativeControls
-                      resizeMode="contain"
-                      isLooping
-                      shouldPlay
-                    />
+                    <Text style={{color: '#00e676', textAlign: 'center', fontSize: 12, marginBottom: 15}} selectable={true}>{recentStats.videoUrl}</Text>
                   )}
+                  <Text style={{color: '#888', textAlign: 'center', fontSize: 11}}>Copy this URL and open it in Safari to watch the ball tracking replay.</Text>
+                  <TouchableOpacity style={styles.drsCloseBtn} onPress={() => setShowReplayModal(false)}>
+                    <Text style={styles.drsCloseText}>CLOSE</Text>
+                  </TouchableOpacity>
                 </View>
               </View>
             </Modal>

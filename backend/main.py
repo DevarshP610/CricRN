@@ -6,7 +6,7 @@ import shutil
 from cv_pipeline.ball_tracking import process_ball_tracking
 from cv_pipeline.biomechanics import process_biomechanics
 
-app = FastAPI(title="CricCoach AI Backend")
+app = FastAPI(title="CricRN AI Backend")
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,7 +23,7 @@ app.mount("/videos", StaticFiles(directory="temp_videos"), name="videos")
 
 @app.get("/ping")
 def ping():
-    return {"status": "ok", "message": "CricCoach Backend is running"}
+    return {"status": "ok", "message": "CricRN Backend is running"}
 
 from fastapi import Depends
 from sqlalchemy.orm import Session
@@ -76,90 +76,36 @@ def get_matches(db: Session = Depends(get_db)):
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 
-import base64
-import cv2
-import numpy as np
-import json
-
-@app.websocket("/ws/live-stream")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    print("Phone connected to AI Live Stream!")
-    
-    backSub = cv2.createBackgroundSubtractorMOG2(history=10, varThreshold=50, detectShadows=False)
-    frames_since_motion = 0
-    motion_detected = False
-
-    try:
-        while True:
-            # Receive base64 frame from the phone
-            text_data = await websocket.receive_text()
-            try:
-                data = json.loads(text_data)
-                if data.get("type") == "frame":
-                    base64_img = data.get("data")
-                    img_data = base64.b64decode(base64_img)
-                    np_arr = np.frombuffer(img_data, np.uint8)
-                    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
-                    
-                    if frame is not None:
-                        # OpenCV Motion Detection for Auto-Stop
-                        fgMask = backSub.apply(frame)
-                        contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        
-                        has_motion = False
-                        for contour in contours:
-                            if cv2.contourArea(contour) > 100:  # Adjust threshold based on testing
-                                has_motion = True
-                                break
-                                
-                        if has_motion:
-                            motion_detected = True
-                            frames_since_motion = 0
-                        elif motion_detected:
-                            frames_since_motion += 1
-                            
-                        # If motion was detected but stopped for 3 frames (ball is dead/hit)
-                        if motion_detected and frames_since_motion > 3:
-                            print("AI DETECTED BALL IS DEAD! Sending STOP signal.")
-                            await websocket.send_json({"action": "STOP_RECORDING"})
-                            # Reset for next ball
-                            motion_detected = False
-                            frames_since_motion = 0
-            except Exception as e:
-                print("Error processing frame: ", e)
-    except WebSocketDisconnect:
-        print("Phone disconnected from AI Live Stream.")
-
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
     file_location = f"temp_videos/{file.filename}"
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # 1. Run Ball Tracking (YOLOv8 + HawkEye Physics)
-    hawkeye_data = process_ball_tracking(file_location)
+    # 1. Run Ball Tracking (OpenCV + HawkEye Physics) — returns speed, swing, turn, hawkeye, videoUrl
+    tracking_data = process_ball_tracking(file_location)
     
     # 2. Run Biomechanics (MediaPipe Pose)
     biomechanics_data = process_biomechanics(file_location)
     
-    # Clean up
-    os.remove(file_location)
+    # DO NOT delete the original video — the tracer video is saved alongside it.
+    # Clean up original only (tracer has a _processed suffix)
+    try:
+        os.remove(file_location)
+    except:
+        pass
     
-    # Combine results
-    result = {
-        "isNoBall": biomechanics_data.get("isNoBall", False),
-        "isWide": hawkeye_data.get("isWide", False),
-        "releaseData": {
-            "height": biomechanics_data.get("releaseHeight", 2.1),
-            "swingDegrees": hawkeye_data.get("swingDegrees", 0.0)
-        },
-        "hawkeye": hawkeye_data.get("hawkeye", {
-            "pitching": "IN LINE",
-            "impact": "IN LINE",
-            "wickets": "HITTING"
+    # Return ALL real data directly at the root level so the phone can read it
+    return {
+        "speed": tracking_data.get("speed", 0),
+        "swing": tracking_data.get("swing", 0),
+        "turn": tracking_data.get("turn", 0),
+        "videoUrl": tracking_data.get("videoUrl", None),
+        "hawkeye": tracking_data.get("hawkeye", {
+            "pitching": "UNKNOWN",
+            "impact": "UNKNOWN",
+            "wickets": "UNKNOWN"
         }),
-        "shotType": biomechanics_data.get("shotType", "DEFENSE")
+        "isNoBall": biomechanics_data.get("isNoBall", False),
+        "shotType": biomechanics_data.get("shotType", "UNKNOWN")
     }
-    
-    return result
