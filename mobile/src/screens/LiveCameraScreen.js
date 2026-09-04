@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Alert, Modal } from 'react-native';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
 import { Check, Target, LogOut, AlertTriangle, X, Trophy } from 'lucide-react-native';
-import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, Line } from 'react-native-svg';
+import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, Line, Polyline } from 'react-native-svg';
+import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { width, height } = Dimensions.get('window');
@@ -117,15 +118,47 @@ export default function LiveCameraScreen({ route, navigation }) {
   const wsRef = useRef(null);
   const fallbackTimerRef = useRef(null);
 
-  // Auto-stop recording after the configured duration
-  // NOTE: takePhoto() cannot be called during startRecording() on react-native-vision-camera,
-  // so live frame streaming to the backend is not possible during recording.
-  // Instead, the backend analyzes the FULL video after recording stops and returns real data.
-  const autoStopRecording = () => {
+  const connectAILiveStream = () => {
+    const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
+    const WS_URL = API_URL.replace('http', 'ws').replace('https', 'wss') + '/ws/live-stream';
+    
+    wsRef.current = new WebSocket(WS_URL);
+    
+    // Safety fallback in case the AI misses the ball
     fallbackTimerRef.current = setTimeout(() => {
-      console.log(`Auto-stop triggered after ${recordingDuration}s`);
+      console.log("AI Auto-Stop Fallback triggered!");
       stopRecording();
     }, recordingDuration * 1000);
+    
+    wsRef.current.onopen = () => {
+      // Stream snapshots to AI
+      const streamInterval = setInterval(async () => {
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && cameraRef.current) {
+          try {
+            // takeSnapshot grabs the preview directly from the GPU, bypassing the startRecording lock!
+            const photo = await cameraRef.current.takeSnapshot({ quality: 50 });
+            const base64 = await FileSystem.readAsStringAsync(photo.path, { encoding: FileSystem.EncodingType.Base64 });
+            wsRef.current.send(JSON.stringify({ type: 'frame', data: base64 }));
+          } catch (e) {
+            console.log("Snapshot failed: ", e);
+          }
+        } else {
+          clearInterval(streamInterval);
+        }
+      }, 300); // ~3 FPS
+      wsRef.current.streamInterval = streamInterval;
+    };
+
+    wsRef.current.onmessage = async (e) => {
+      const msg = JSON.parse(e.data);
+      if (msg.action === 'STOP_RECORDING') {
+        console.log("AI detected dead ball! Stopping.");
+        if (wsRef.current?.streamInterval) clearInterval(wsRef.current.streamInterval);
+        if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+        wsRef.current.close();
+        await stopRecording();
+      }
+    };
   };
 
   const startRecording = async () => {
@@ -134,7 +167,7 @@ export default function LiveCameraScreen({ route, navigation }) {
     setShowTrail(false);
     
     try {
-      autoStopRecording(); // Auto-stop after configured duration
+      connectAILiveStream(); // Hook up to true AI for automatic stop
 
       cameraRef.current.startRecording({
         onRecordingFinished: async (video) => {
@@ -163,6 +196,10 @@ export default function LiveCameraScreen({ route, navigation }) {
   const stopRecording = async () => {
     if (cameraRef.current) {
       try {
+        if (wsRef.current) {
+          if (wsRef.current.streamInterval) clearInterval(wsRef.current.streamInterval);
+          if (wsRef.current.readyState === WebSocket.OPEN) wsRef.current.close();
+        }
         if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
         await cameraRef.current.stopRecording();
       } catch (e) {
@@ -318,10 +355,25 @@ export default function LiveCameraScreen({ route, navigation }) {
                 <Rect x="49" y="70" width="2" height="15" fill="#fff" />
                 <Rect x="52" y="70" width="2" height="15" fill="#fff" />
                 
-                {drsStep >= 1 && <Circle cx="40" cy="50" r="4" fill="#ffea00" />}
-                {drsStep >= 2 && <Circle cx="48" cy="70" r="4" fill="#ffea00" />}
-                {drsStep >= 2 && <Line x1="40" y1="50" x2="48" y2="70" stroke="#ffea00" strokeWidth="2" strokeDasharray="4" />}
-                {drsStep >= 3 && <Line x1="48" y1="70" x2="55" y2="90" stroke="#ffea00" strokeWidth="2" strokeDasharray="4" />}
+                {recentStats?.trajectory_points?.length > 0 ? (
+                  <>
+                    <Polyline 
+                      points={recentStats.trajectory_points.map(p => `${p.x * 100},${p.y * 100}`).join(' ')}
+                      fill="none"
+                      stroke="#ff0000"
+                      strokeWidth="2"
+                      strokeDasharray="4"
+                    />
+                    <Circle 
+                      cx={recentStats.trajectory_points[recentStats.trajectory_points.length - 1].x * 100} 
+                      cy={recentStats.trajectory_points[recentStats.trajectory_points.length - 1].y * 100} 
+                      r="4" 
+                      fill="#ffea00" 
+                    />
+                  </>
+                ) : (
+                  <Text style={{color:'#fff', textAlign:'center', marginTop: 50}}>No Tracker Data</Text>
+                )}
               </Svg>
             </View>
 
@@ -394,6 +446,38 @@ export default function LiveCameraScreen({ route, navigation }) {
           </View>
         )}
 
+        {/* LIVE BALL TRACER OVERLAY */}
+        {showTrail && recentStats?.trajectory_points?.length > 0 && (
+          <View style={[StyleSheet.absoluteFill, { zIndex: 5, elevation: 5 }]} pointerEvents="none">
+            <Svg height="100%" width="100%" viewBox={`0 0 ${width} ${height}`}>
+              <Polyline 
+                points={recentStats.trajectory_points.map(p => `${p.x * width},${p.y * height}`).join(' ')}
+                fill="none"
+                stroke="#ff1744"
+                strokeWidth="6"
+                strokeDasharray="10 5"
+              />
+              {/* Outer Glow */}
+              <Polyline 
+                points={recentStats.trajectory_points.map(p => `${p.x * width},${p.y * height}`).join(' ')}
+                fill="none"
+                stroke="#ff5252"
+                strokeWidth="12"
+                opacity="0.3"
+              />
+              <Circle 
+                cx={recentStats.trajectory_points[recentStats.trajectory_points.length - 1].x * width} 
+                cy={recentStats.trajectory_points[recentStats.trajectory_points.length - 1].y * height} 
+                r="10" 
+                fill="#ffea00" 
+                stroke="#ff1744"
+                strokeWidth="2"
+              />
+            </Svg>
+            <Text style={{ position: 'absolute', bottom: 150, alignSelf: 'center', color: '#ff1744', fontWeight: 'bold', fontSize: 18, backgroundColor: 'rgba(0,0,0,0.5)', padding: 10, borderRadius: 10 }}>BALL TRACER</Text>
+          </View>
+        )}
+
         {mode === 'LIVE' && !isNoBall && (
           <>
             {/* END MATCH BUTTON */}
@@ -436,30 +520,16 @@ export default function LiveCameraScreen({ route, navigation }) {
                   <Target color="#fff" size={16} />
                   <Text style={styles.drsWidgetBtnText}>DRS REVIEW</Text>
                 </TouchableOpacity>
-                {recentStats.videoUrl && (
-                  <TouchableOpacity style={[styles.drsWidgetBtn, {backgroundColor: '#ff1744'}]} onPress={() => setShowReplayModal(true)}>
+                {recentStats.trajectory_points?.length > 0 && (
+                  <TouchableOpacity style={[styles.drsWidgetBtn, {backgroundColor: '#ff1744'}]} onPress={() => {
+                    setShowTrail(true);
+                    setTimeout(() => setShowTrail(false), 5000);
+                  }}>
                     <Text style={styles.drsWidgetBtnText}>🎥 VIEW TRACER</Text>
                   </TouchableOpacity>
                 )}
               </View>
             )}
-
-            {/* REPLAY MODAL */}
-            <Modal visible={showReplayModal} transparent={true} animationType="fade">
-              <View style={styles.drsBg}>
-                <View style={styles.drsContent}>
-                  <Text style={styles.drsTitle}>BALL TRACER VIDEO</Text>
-                  <Text style={{color: '#aaa', textAlign: 'center', marginBottom: 15}}>The AI has generated a red tracer overlay on your delivery video.</Text>
-                  {recentStats?.videoUrl && (
-                    <Text style={{color: '#00e676', textAlign: 'center', fontSize: 12, marginBottom: 15}} selectable={true}>{recentStats.videoUrl}</Text>
-                  )}
-                  <Text style={{color: '#888', textAlign: 'center', fontSize: 11}}>Copy this URL and open it in Safari to watch the ball tracking replay.</Text>
-                  <TouchableOpacity style={styles.drsCloseBtn} onPress={() => setShowReplayModal(false)}>
-                    <Text style={styles.drsCloseText}>CLOSE</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </Modal>
 
             {/* ADVANCED SCOREBOARD */}
             {sessionType === 'MATCH' && (

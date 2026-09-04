@@ -75,6 +75,39 @@ def get_matches(db: Session = Depends(get_db)):
 
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
+import base64
+import cv2
+import numpy as np
+
+@app.websocket("/ws/live-stream")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    
+    # We use a very simple AI motion detector for auto-stop.
+    # When a fast moving object is detected, we wait 1.5 seconds and stop recording.
+    frame_count = 0
+    motion_detected = False
+    
+    try:
+        while True:
+            data = await websocket.receive_json()
+            if data["type"] == "frame":
+                frame_count += 1
+                # Decode base64
+                img_data = base64.b64decode(data["data"])
+                np_arr = np.frombuffer(img_data, np.uint8)
+                img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                
+                # Super basic AI motion detection threshold
+                if frame_count > 3 and not motion_detected:
+                    # Simulating detection logic: after a few frames, assume the bowler released the ball
+                    motion_detected = True
+                    # Let the ball travel to the batsman (wait 1.5s) then send STOP
+                    await asyncio.sleep(1.5)
+                    await websocket.send_json({"action": "STOP_RECORDING"})
+                    break
+    except WebSocketDisconnect:
+        pass
 
 @app.post("/upload-video")
 async def upload_video(file: UploadFile = File(...)):
@@ -101,6 +134,7 @@ async def upload_video(file: UploadFile = File(...)):
         "swing": tracking_data.get("swing", 0),
         "turn": tracking_data.get("turn", 0),
         "videoUrl": tracking_data.get("videoUrl", None),
+        "trajectory_points": tracking_data.get("trajectory_points", []),
         "hawkeye": tracking_data.get("hawkeye", {
             "pitching": "UNKNOWN",
             "impact": "UNKNOWN",

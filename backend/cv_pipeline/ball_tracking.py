@@ -45,8 +45,9 @@ def process_ball_tracking(video_path: str):
         detectShadows=False
     )
     
-    ball_trajectory = []  # List of (x, y, frame_idx)
-
+    # Multi-hypothesis tracking to ignore screen shake noise
+    tracks = []  # List of lists: [[(cx, cy, frame), ...], ...]
+    
     frame_count = 0
     while True:
         ret, frame = cap.read()
@@ -70,45 +71,50 @@ def process_ball_tracking(video_path: str):
         
         contours, _ = cv2.findContours(fgMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Find the best ball-like contour
-        best_candidate = None
-        best_score = 0
-        
+        candidates = []
         for contour in contours:
             area = cv2.contourArea(contour)
             if area < min_ball_area or area > max_ball_area:
                 continue
                 
             perimeter = cv2.arcLength(contour, True)
-            if perimeter == 0:
-                continue
-                
+            if perimeter == 0: continue
+            
             # Circularity: 1.0 = perfect circle, lower = elongated
             circularity = 4 * math.pi * area / (perimeter * perimeter)
-            
-            if circularity > 0.3:  # Reasonable threshold for a ball blob
-                # Score = higher circularity + smaller area (ball is small) 
-                score = circularity * (1.0 / (area + 1))
-                if score > best_score:
-                    best_score = score
-                    (cx, cy), radius = cv2.minEnclosingCircle(contour)
-                    best_candidate = (int(cx), int(cy), frame_count)
+            if circularity > 0.4: # Must be somewhat circular, ignoring limbs/bats
+                (cx, cy), radius = cv2.minEnclosingCircle(contour)
+                candidates.append((int(cx), int(cy), frame_count))
         
-        if best_candidate:
-            # Velocity filter: reject jumps that are too large (noise)
-            if len(ball_trajectory) > 0:
-                last = ball_trajectory[-1]
-                dx = abs(best_candidate[0] - last[0])
-                dy = abs(best_candidate[1] - last[1])
-                max_jump = vid_width * 0.15  # Ball shouldn't jump more than 15% of frame width per frame
-                if dx < max_jump and dy < max_jump:
-                    ball_trajectory.append(best_candidate)
-            else:
-                ball_trajectory.append(best_candidate)
+        # Update existing tracks or create new ones
+        max_jump = vid_width * 0.1  # Max jump per frame
+        for cand in candidates:
+            matched = False
+            for track in tracks:
+                last_pt = track[-1]
+                # If this candidate is in the next few frames and close by
+                if frame_count - last_pt[2] <= 3:
+                    dx = abs(cand[0] - last_pt[0])
+                    dy = abs(cand[1] - last_pt[1])
+                    if dx < max_jump and dy < max_jump:
+                        track.append(cand)
+                        matched = True
+                        break
+            if not matched:
+                tracks.append([cand])
 
     cap.release()
     
-    print(f"[BallTracking] Detected {len(ball_trajectory)} trajectory points")
+    # Pick the longest continuous track (the actual ball will have the most frames)
+    # Screen shake noise tracks will be short-lived
+    ball_trajectory = []
+    if tracks:
+        longest_track = max(tracks, key=len)
+        if len(longest_track) >= 5:
+            ball_trajectory = longest_track
+            
+    print(f"[BallTracking] Evaluated {len(tracks)} separate object tracks")
+    print(f"[BallTracking] Selected ball trajectory with {len(ball_trajectory)} points")
     
     # Need at least 5 points for meaningful physics
     if len(ball_trajectory) < 5:
@@ -254,11 +260,15 @@ def process_ball_tracking(video_path: str):
     print(f"[BallTracking] DRS: pitching={pitching}, impact={impact}, wickets={wickets}")
     print(f"[BallTracking] Tracer video: {video_url}")
 
+    # Normalize the points relative to screen dimensions so the frontend can scale them properly
+    normalized_points = [{"x": round(float(pt[0] / vid_width), 3), "y": round(float(pt[1] / vid_height), 3)} for pt in tracer_points]
+
     return {
         "speed": round(speed_kmh, 1),
         "swing": round(swing_deg, 1),
         "turn": round(turn_deg, 1),
         "videoUrl": video_url,
+        "trajectory_points": normalized_points,
         "hawkeye": {
             "pitching": pitching,
             "impact": impact,
@@ -275,6 +285,7 @@ def _fallback(reason: str):
         "swing": 0.0,
         "turn": 0.0,
         "videoUrl": None,
+        "trajectory_points": [],
         "hawkeye": {
             "pitching": "DETECTION FAILED",
             "impact": "DETECTION FAILED",

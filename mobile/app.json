@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "mobile",
-    "slug": "mobile",
+    "name": "CricRN",
+    "slug": "cricrn",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/cricrn_logo.jpg",
     "userInterfaceStyle": "light",
     "jsEngine": "jsc",
     "ios": {
