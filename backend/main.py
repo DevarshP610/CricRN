@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 import shutil
 
@@ -143,12 +143,12 @@ class LiveDeliveryDetector:
 
         # 1. ARMED: Looking for bowler starting their delivery run-up
         if self.state == "ARMED":
-            if total_motion_area > 3500:
+            if total_motion_area > 250:
                 self.bowler_motion_frames += 1
                 if self.bowler_motion_frames >= 2:
                     self.state = "WAITING"
                     self.bowler_motion_frames = 0
-                    print("[AI Autonomous] Bowler run-up detected! Triggering START_RECORDING.")
+                    print(f"[AI Autonomous] Bowler run-up detected (motion={total_motion_area:.0f})! Triggering START_RECORDING.")
                     return "START_RECORDING"
             else:
                 self.bowler_motion_frames = max(0, self.bowler_motion_frames - 1)
@@ -246,12 +246,12 @@ async def websocket_endpoint(websocket: WebSocket):
         print(f"[AI Autonomous] Error: {e}")
 
 @app.post("/upload-video")
-async def upload_video(file: UploadFile = File(...)):
+async def upload_video(file: UploadFile = File(...), pitch_length: float = Form(10.0)):
     file_location = f"temp_videos/{file.filename}"
     with open(file_location, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    tracking_data = process_ball_tracking(file_location)
+    tracking_data = process_ball_tracking(file_location, pitch_length_m=pitch_length)
     biomechanics_data = process_biomechanics(file_location)
     
     try:

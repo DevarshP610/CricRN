@@ -3,13 +3,14 @@ import numpy as np
 import math
 import os
 
-def process_ball_tracking(video_path: str):
+def process_ball_tracking(video_path: str, pitch_length_m: float = 10.0):
     """
     Analyzes cricket delivery video using OpenCV.
     Works with ANY ball type: rubber, foam, leather, red, white, pink.
     Uses motion-based tracking (not color-based) so ball color doesn't matter.
+    Configured for dynamic pitch length (indoor, nets, or full stadium).
     """
-    print(f"[BallTracking] Starting analysis on {video_path}...")
+    print(f"[BallTracking] Starting analysis on {video_path} (pitch={pitch_length_m}m)...")
     
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -54,7 +55,8 @@ def process_ball_tracking(video_path: str):
             
         frame_count += 1
         
-        if frame_count < 3:
+        # Skip initial 6 frames to completely eliminate camera tap shake and warm up background model
+        if frame_count <= 6:
             backSub.apply(frame)
             continue
 
@@ -78,7 +80,12 @@ def process_ball_tracking(video_path: str):
                 x, y, w, h = cv2.boundingRect(contour)
                 aspect = float(w) / max(h, 1)
                 if 0.35 < aspect < 2.8:
-                    candidates.append((x + w / 2.0, y + h / 2.0, frame_count))
+                    cx = x + w / 2.0
+                    cy = y + h / 2.0
+                    # Exclude ceiling / light fixtures (top 15% of frame) and floor boundary
+                    if cy < vid_height * 0.15 or cy > vid_height * 0.98:
+                        continue
+                    candidates.append((cx, cy, frame_count))
         
         # Velocity-guided candidate association (strictly at most 1 candidate per track per frame)
         used_candidates = set()
@@ -128,9 +135,9 @@ def process_ball_tracking(video_path: str):
         Y = np.array([p[1] for p in pts])
         T = np.array([p[2] for p in pts]) / fps
         total_span = np.sqrt(np.ptp(X)**2 + np.ptp(Y)**2)
-        if total_span < min(vid_width, vid_height) * 0.12: return -1.0
+        if total_span < min(vid_width, vid_height) * 0.10: return -1.0
         dt = T[-1] - T[0]
-        if dt < 0.12: return -1.0
+        if dt < 0.10: return -1.0
         avg_speed_px = total_span / dt
         try:
             p_y, res_y, _, _, _ = np.polyfit(T, Y, 2, full=True)
@@ -175,19 +182,17 @@ def process_ball_tracking(video_path: str):
     Y = np.array([pt[1] for pt in ball_trajectory], dtype=float)
     Frames = np.array([pt[2] for pt in ball_trajectory], dtype=float)
     
-    # --- REAL PHYSICS ENGINE ---
+    # --- REAL ACCURATE PHYSICS ENGINE ---
     total_frames_tracked = float(Frames[-1] - Frames[0])
     flight_time_s = max(total_frames_tracked / fps, 0.05)
     
     span_px = max(np.ptp(Y), np.ptp(X))
-    estimated_pitch_span_px = max(span_px, vid_height * 0.45)
-    pixels_per_meter = estimated_pitch_span_px / 18.0
+    pixels_per_meter = max(span_px, vid_height * 0.45) / max(pitch_length_m, 3.0)
     
-    # Dynamic Speed Calculation:
-    # A delivery flight covers between 12m and 18m from release to batsman
-    dist_m = max(span_px / pixels_per_meter, 12.0)
+    # Real physical distance traveled within the user's pitch/room length
+    dist_m = float(np.clip(span_px / pixels_per_meter, 2.0, pitch_length_m))
     speed_mps = dist_m / flight_time_s
-    speed_kmh = round(float(np.clip(speed_mps * 3.6, 20.0, 160.0)), 1)
+    speed_kmh = round(float(np.clip(speed_mps * 3.6, 15.0, 160.0)), 1)
     
     # Identify bounce point
     dy = np.diff(Y)

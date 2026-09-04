@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, SafeAreaView, Dimensions, Alert, Modal, Vibration } from 'react-native';
 import { Camera, useCameraDevice } from 'react-native-vision-camera';
-import { Check, Target, LogOut, AlertTriangle, X, Trophy, Bot, RefreshCw } from 'lucide-react-native';
+import { Check, Target, LogOut, AlertTriangle, X, Trophy, Bot, RefreshCw, Settings, Square } from 'lucide-react-native';
 import Svg, { Path, Circle, Defs, LinearGradient, Stop, Rect, Line, Polyline } from 'react-native-svg';
 import * as FileSystem from 'expo-file-system';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -47,6 +47,8 @@ export default function LiveCameraScreen({ route, navigation }) {
   const [engineState, setEngineState] = useState('IDLE'); 
   const [showTrail, setShowTrail] = useState(false);
   const [recentStats, setRecentStats] = useState(null);
+  const [isStatsHidden, setIsStatsHidden] = useState(false);
+  const [pitchDistance, setPitchDistance] = useState(10.0);
 
   // Autonomous Hands-Free Mode
   const [isAutonomous, setIsAutonomous] = useState(true);
@@ -108,6 +110,11 @@ export default function LiveCameraScreen({ route, navigation }) {
   }, [score, matchHistory]);
 
   const handleTap = (e) => {
+    if (showTrail) {
+      setShowTrail(false);
+      if (animIntervalRef.current) clearInterval(animIntervalRef.current);
+      return;
+    }
     if (engineState !== 'IDLE') return;
     const { pageX, pageY } = e.nativeEvent;
     if (mode === 'CALIBRATE_STRIKER' && strikerStumps.length < 3) {
@@ -115,6 +122,18 @@ export default function LiveCameraScreen({ route, navigation }) {
     } else if (mode === 'CALIBRATE_NON_STRIKER' && nonStrikerStumps.length < 3) {
       setNonStrikerStumps([...nonStrikerStumps, { x: pageX, y: pageY }]);
     }
+  };
+
+  const resetForNextDelivery = () => {
+    setShowTrail(false);
+    if (animIntervalRef.current) clearInterval(animIntervalRef.current);
+    if (autoCountdownTimerRef.current) clearInterval(autoCountdownTimerRef.current);
+    setAutoCountdown(null);
+    setEngineState('IDLE');
+    if (isAutonomous && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'ARM' }));
+    }
+    try { Vibration.vibrate(60); } catch (_) {}
   };
 
   const wsRef = useRef(null);
@@ -225,15 +244,22 @@ export default function LiveCameraScreen({ route, navigation }) {
       cameraRef.current.startRecording({
         onRecordingFinished: async (video) => {
           setEngineState('ANALYZING');
-          let formData = new FormData();
-          formData.append('file', { uri: video.path, name: 'delivery.mp4', type: 'video/mp4' });
-          
-          const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
-          const response = await fetch(`${API_URL}/upload-video`, { 
-            method: 'POST', body: formData, headers: { 'Content-Type': 'multipart/form-data', 'ngrok-skip-browser-warning': 'true' } 
-          });
-          const aiData = await response.json();
-          handleBackendResponse(aiData);
+          try {
+            let formData = new FormData();
+            formData.append('file', { uri: video.path, name: 'delivery.mp4', type: 'video/mp4' });
+            formData.append('pitch_length', pitchDistance.toString());
+            
+            const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
+            const response = await fetch(`${API_URL}/upload-video`, { 
+              method: 'POST', body: formData, headers: { 'Content-Type': 'multipart/form-data', 'ngrok-skip-browser-warning': 'true' } 
+            });
+            const aiData = await response.json();
+            handleBackendResponse(aiData);
+          } catch (err) {
+            console.log('Video upload/analysis error:', err);
+            Alert.alert('Analysis Failed', 'Could not process delivery with AI engine.');
+            setEngineState('IDLE');
+          }
         },
         onRecordingError: (error) => {
           console.log('Recording Error:', error);
@@ -294,6 +320,7 @@ export default function LiveCameraScreen({ route, navigation }) {
       trajectory_points: points,
       hawkeye: aiData.hawkeye || {}
     });
+    setIsStatsHidden(false);
 
     if (points.length > 0) {
       startTrailAnimation(points);
@@ -403,10 +430,31 @@ export default function LiveCameraScreen({ route, navigation }) {
       <Modal visible={showSettings} transparent={true} animationType="fade">
         <View style={styles.modalBg}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Camera Settings</Text>
+            <Text style={styles.modalTitle}>Camera & Pitch Settings</Text>
             
-            <Text style={styles.settingsLabel}>Recording Window (Seconds)</Text>
-            <Text style={styles.settingsSubtext}>Adjust based on your run-up length.</Text>
+            <Text style={styles.settingsLabel}>Pitch / Room Length</Text>
+            <Text style={styles.settingsSubtext}>Calibrates ball speed to your actual playing space.</Text>
+            
+            <View style={styles.pitchSelectorRow}>
+              {[
+                { label: '5m (Room)', val: 5.0 },
+                { label: '10m (Nets)', val: 10.0 },
+                { label: '20m (Full Pitch)', val: 20.0 }
+              ].map(item => (
+                <TouchableOpacity 
+                  key={item.val}
+                  style={[styles.pitchChoiceBtn, pitchDistance === item.val && styles.pitchChoiceBtnActive]}
+                  onPress={() => setPitchDistance(item.val)}
+                >
+                  <Text style={[styles.pitchChoiceText, pitchDistance === item.val && styles.pitchChoiceTextActive]}>
+                    {item.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={[styles.settingsLabel, { marginTop: 16 }]}>Max Safety Window (Seconds)</Text>
+            <Text style={styles.settingsSubtext}>Auto-stops recording if ball leaves frame.</Text>
             
             <View style={styles.stepperContainer}>
               <TouchableOpacity style={styles.stepperBtn} onPress={() => setRecordingDuration(Math.max(2, recordingDuration - 1))}>
@@ -498,15 +546,23 @@ export default function LiveCameraScreen({ route, navigation }) {
             <Text style={styles.instructionText}>
               {mode === 'CALIBRATE_STRIKER' ? `Map STRIKER'S stumps (${strikerStumps.length}/3)` : `Map NON-STRIKER'S stumps (${nonStrikerStumps.length}/3)`}
             </Text>
-            <TouchableOpacity 
-              style={[styles.confirmBtn, (mode === 'CALIBRATE_STRIKER' ? strikerStumps.length : nonStrikerStumps.length) === 0 && { opacity: 0.5 }]} 
-              onPress={() => {
-                if (mode === 'CALIBRATE_STRIKER' && strikerStumps.length > 0) setMode('CALIBRATE_NON_STRIKER');
-                else if (mode === 'CALIBRATE_NON_STRIKER' && nonStrikerStumps.length > 0) setMode('LIVE');
-              }}>
-              <Check color="#000" size={24} />
-              <Text style={styles.confirmBtnText}>{mode === 'CALIBRATE_STRIKER' ? 'Lock Striker Stumps' : 'Start Match'}</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <TouchableOpacity 
+                style={[styles.confirmBtn, (mode === 'CALIBRATE_STRIKER' ? strikerStumps.length : nonStrikerStumps.length) === 0 && { opacity: 0.5 }]} 
+                onPress={() => {
+                  if (mode === 'CALIBRATE_STRIKER' && strikerStumps.length > 0) setMode('CALIBRATE_NON_STRIKER');
+                  else if (mode === 'CALIBRATE_NON_STRIKER' && nonStrikerStumps.length > 0) setMode('LIVE');
+                }}>
+                <Check color="#000" size={20} />
+                <Text style={styles.confirmBtnText}>{mode === 'CALIBRATE_STRIKER' ? 'Lock Stumps' : 'Start Match'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.skipCalibrationBtn}
+                onPress={() => setMode('LIVE')}
+              >
+                <Text style={styles.skipCalibrationText}>Skip Calibration</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         )}
 
@@ -531,30 +587,37 @@ export default function LiveCameraScreen({ route, navigation }) {
 
         {/* LIVE ANIMATED BALL TRACER OVERLAY */}
         {showTrail && recentStats?.trajectory_points?.length > 0 && (
-          <View style={[StyleSheet.absoluteFill, { zIndex: 10, elevation: 10 }]} pointerEvents="box-none">
-            <Svg height="100%" width="100%" viewBox={`0 0 ${width} ${height}`}>
-              {/* Glowing Neon Red Trail */}
-              {trailStep > 1 && (
-                <>
-                  <Polyline 
-                    points={recentStats.trajectory_points.slice(0, trailStep).map(p => `${p.x * width},${p.y * height}`).join(' ')}
-                    fill="none"
-                    stroke="#ff1744"
-                    strokeWidth="12"
-                    opacity="0.3"
-                  />
-                  <Polyline 
-                    points={recentStats.trajectory_points.slice(0, trailStep).map(p => `${p.x * width},${p.y * height}`).join(' ')}
-                    fill="none"
-                    stroke="#ff1744"
-                    strokeWidth="5"
-                    strokeDasharray="6 3"
-                  />
-                </>
-              )}
-              {/* Fake Ball Following Real Trajectory */}
-              {recentStats.trajectory_points[Math.min(trailStep - 1, recentStats.trajectory_points.length - 1)] && (
-                <>
+          <View style={[StyleSheet.absoluteFill, { zIndex: 25, elevation: 25 }]}>
+            <TouchableOpacity 
+              activeOpacity={1} 
+              style={StyleSheet.absoluteFill} 
+              onPress={() => {
+                setShowTrail(false);
+                if (animIntervalRef.current) clearInterval(animIntervalRef.current);
+              }}
+            >
+              <Svg height="100%" width="100%" viewBox={`0 0 ${width} ${height}`}>
+                {/* Glowing Neon Red Trail */}
+                {trailStep > 1 && (
+                  <>
+                    <Polyline 
+                      points={recentStats.trajectory_points.slice(0, trailStep).map(p => `${p.x * width},${p.y * height}`).join(' ')}
+                      fill="none"
+                      stroke="#ff1744"
+                      strokeWidth="12"
+                      opacity="0.3"
+                    />
+                    <Polyline 
+                      points={recentStats.trajectory_points.slice(0, trailStep).map(p => `${p.x * width},${p.y * height}`).join(' ')}
+                      fill="none"
+                      stroke="#ff1744"
+                      strokeWidth="5"
+                      strokeDasharray="6 3"
+                    />
+                  </>
+                )}
+                {/* Traveling Ball */}
+                {recentStats.trajectory_points[Math.min(trailStep - 1, recentStats.trajectory_points.length - 1)] && (
                   <Circle 
                     cx={recentStats.trajectory_points[Math.min(trailStep - 1, recentStats.trajectory_points.length - 1)].x * width} 
                     cy={recentStats.trajectory_points[Math.min(trailStep - 1, recentStats.trajectory_points.length - 1)].y * height} 
@@ -563,12 +626,41 @@ export default function LiveCameraScreen({ route, navigation }) {
                     stroke="#ffffff"
                     strokeWidth="2.5"
                   />
-                </>
-              )}
-            </Svg>
-            <View style={{ position: 'absolute', top: 50, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,0.75)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#ff1744', flexDirection: 'row', alignItems: 'center' }}>
-              <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: '#ff1744', marginRight: 8 }} />
-              <Text style={{ color: '#fff', fontWeight: 'bold', fontSize: 13, letterSpacing: 1 }}>HAWKEYE BALL TRACER</Text>
+                )}
+              </Svg>
+            </TouchableOpacity>
+
+            {/* Tracer Top Header */}
+            <View style={styles.tracerHeaderBar}>
+              <View style={styles.tracerBadge}>
+                <View style={styles.tracerDot} />
+                <Text style={styles.tracerTitle}>HAWKEYE BALL TRACER</Text>
+              </View>
+              <TouchableOpacity 
+                style={styles.tracerCloseBtn} 
+                onPress={() => {
+                  setShowTrail(false);
+                  if (animIntervalRef.current) clearInterval(animIntervalRef.current);
+                }}
+              >
+                <X color="#fff" size={20} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Tracer Bottom Actions */}
+            <View style={styles.tracerBottomBar}>
+              <TouchableOpacity 
+                style={styles.tracerReplayBtn} 
+                onPress={() => startTrailAnimation(recentStats.trajectory_points)}
+              >
+                <Text style={styles.tracerReplayText}>🎥 REPLAY</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.tracerNextBallBtn} 
+                onPress={resetForNextDelivery}
+              >
+                <Text style={styles.tracerNextBallText}>⚡ BOWL NEXT BALL</Text>
+              </TouchableOpacity>
             </View>
           </View>
         )}
@@ -593,7 +685,7 @@ export default function LiveCameraScreen({ route, navigation }) {
 
         {mode === 'LIVE' && !isNoBall && (
           <>
-            {/* TOP CONTROLS: END MATCH & AUTONOMOUS TOGGLE */}
+            {/* TOP CONTROLS: END MATCH, AUTONOMOUS TOGGLE, SETTINGS */}
             <View style={styles.topControlRow}>
               <TouchableOpacity style={styles.endMatchBtn} onPress={() => {
                 Alert.alert('End Match', 'Are you sure you want to end and analyze this match?', [
@@ -617,86 +709,132 @@ export default function LiveCameraScreen({ route, navigation }) {
                   {isAutonomous ? 'AI HANDS-FREE: ON' : 'MANUAL'}
                 </Text>
               </TouchableOpacity>
+
+              <TouchableOpacity style={styles.settingsIconBtn} onPress={() => setShowSettings(true)}>
+                <Settings color="#fff" size={18} />
+                <Text style={styles.settingsIconText}>{pitchDistance}m</Text>
+              </TouchableOpacity>
             </View>
 
-            {/* RECENT STATS WIDGET WITH BROADCAST DUAL-SPEED */}
+            {/* RECENT STATS WIDGET WITH BROADCAST DUAL-SPEED & DISMISS BUTTON */}
             {recentStats && engineState !== 'RECORDING_CLIP' && engineState !== 'ANALYZING' && (
-              <View style={styles.recentStatsWidget}>
-                <View style={styles.statHeaderRow}>
-                  <Text style={styles.recentStatsTitle}>LAST BALL</Text>
-                  {recentStats.length_category && (
-                    <View style={[styles.lengthTag, { 
-                      backgroundColor: recentStats.length_category === 'YORKER' ? '#ff9100' : 
-                                       recentStats.length_category === 'GOOD LENGTH' ? '#00e676' : 
-                                       recentStats.length_category === 'FULL LENGTH' ? '#2979ff' : '#ff1744' 
-                    }]}>
-                      <Text style={styles.lengthTagText}>{recentStats.length_category}</Text>
+              isStatsHidden ? (
+                <TouchableOpacity 
+                  style={styles.minimizedStatsPill} 
+                  onPress={() => setIsStatsHidden(false)}
+                >
+                  <Text style={styles.minimizedStatsText}>📊 LAST BALL ({recentStats.speed} km/h)</Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.recentStatsWidget}>
+                  <View style={styles.statHeaderRow}>
+                    <Text style={styles.recentStatsTitle}>LAST BALL</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                      {recentStats.length_category && (
+                        <View style={[styles.lengthTag, { 
+                          backgroundColor: recentStats.length_category === 'YORKER' ? '#ff9100' : 
+                                           recentStats.length_category === 'GOOD LENGTH' ? '#00e676' : 
+                                           recentStats.length_category === 'FULL LENGTH' ? '#2979ff' : '#ff1744',
+                          marginRight: 6
+                        }]}>
+                          <Text style={styles.lengthTagText}>{recentStats.length_category}</Text>
+                        </View>
+                      )}
+                      <TouchableOpacity onPress={() => setIsStatsHidden(true)} style={{ padding: 2 }}>
+                        <X color="#888" size={16} />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {recentStats.speed > 0 ? (
+                    <>
+                      <View style={styles.statLine}>
+                        <Text style={styles.statLineLabel}>Release:</Text>
+                        <Text style={styles.statLineValue}>{recentStats.release_speed || recentStats.speed} km/h</Text>
+                      </View>
+                      {recentStats.pitch_speed && (
+                        <View style={styles.statLine}>
+                          <Text style={styles.statLineLabel}>Off Pitch:</Text>
+                          <Text style={[styles.statLineValue, { color: '#00e676' }]}>{recentStats.pitch_speed} km/h</Text>
+                        </View>
+                      )}
+                      <View style={styles.statLine}>
+                        <Text style={styles.statLineLabel}>Swing:</Text>
+                        <Text style={styles.statLineValue}>{recentStats.swing}°</Text>
+                      </View>
+                      <View style={styles.statLine}>
+                        <Text style={styles.statLineLabel}>Turn:</Text>
+                        <Text style={styles.statLineValue}>{recentStats.turn}°</Text>
+                      </View>
+                      {recentStats.stump_target && (
+                        <Text style={styles.stumpTargetText}>🎯 {recentStats.stump_target}</Text>
+                      )}
+                    </>
+                  ) : (
+                    <View style={{ marginBottom: 8 }}>
+                      <Text style={{ color: '#ff9100', fontSize: 12, fontWeight: 'bold', textAlign: 'center' }}>NO BALL DETECTED</Text>
+                      <Text style={{ color: '#aaa', fontSize: 10, textAlign: 'center', marginTop: 2 }}>Hold camera steady on delivery</Text>
                     </View>
                   )}
-                </View>
 
-                {recentStats.speed > 0 ? (
-                  <>
-                    <View style={styles.statLine}>
-                      <Text style={styles.statLineLabel}>Release:</Text>
-                      <Text style={styles.statLineValue}>{recentStats.release_speed || recentStats.speed} km/h</Text>
-                    </View>
-                    {recentStats.pitch_speed && (
-                      <View style={styles.statLine}>
-                        <Text style={styles.statLineLabel}>Off Pitch:</Text>
-                        <Text style={[styles.statLineValue, { color: '#00e676' }]}>{recentStats.pitch_speed} km/h</Text>
-                      </View>
-                    )}
-                    <View style={styles.statLine}>
-                      <Text style={styles.statLineLabel}>Swing:</Text>
-                      <Text style={styles.statLineValue}>{recentStats.swing}°</Text>
-                    </View>
-                    <View style={styles.statLine}>
-                      <Text style={styles.statLineLabel}>Turn:</Text>
-                      <Text style={styles.statLineValue}>{recentStats.turn}°</Text>
-                    </View>
-                    {recentStats.stump_target && (
-                      <Text style={styles.stumpTargetText}>🎯 {recentStats.stump_target}</Text>
-                    )}
-                  </>
-                ) : (
-                  <View style={{ marginBottom: 8 }}>
-                    <Text style={{ color: '#ff9100', fontSize: 12, fontWeight: 'bold', textAlign: 'center' }}>NO BALL DETECTED</Text>
-                    <Text style={{ color: '#aaa', fontSize: 10, textAlign: 'center', marginTop: 2 }}>Hold camera steady on delivery</Text>
-                  </View>
-                )}
-
-                <TouchableOpacity style={styles.drsWidgetBtn} onPress={() => {
-                  setShowDRSModal(true);
-                  setDrsStep(0);
-                  setTimeout(() => setDrsStep(1), 1000);
-                  setTimeout(() => setDrsStep(2), 2500);
-                  setTimeout(() => setDrsStep(3), 4000);
-                }}>
-                  <Target color="#fff" size={16} />
-                  <Text style={styles.drsWidgetBtnText}>DRS REVIEW</Text>
-                </TouchableOpacity>
-
-                {recentStats.trajectory_points?.length > 0 && (
-                  <TouchableOpacity 
-                    style={[styles.drsWidgetBtn, {backgroundColor: '#ff1744'}]} 
-                    onPress={() => startTrailAnimation(recentStats.trajectory_points)}
-                  >
-                    <Text style={styles.drsWidgetBtnText}>🎥 REPLAY TRACER</Text>
+                  <TouchableOpacity style={styles.drsWidgetBtn} onPress={() => {
+                    setShowDRSModal(true);
+                    setDrsStep(0);
+                    setTimeout(() => setDrsStep(1), 1000);
+                    setTimeout(() => setDrsStep(2), 2500);
+                    setTimeout(() => setDrsStep(3), 4000);
+                  }}>
+                    <Target color="#fff" size={16} />
+                    <Text style={styles.drsWidgetBtnText}>DRS REVIEW</Text>
                   </TouchableOpacity>
-                )}
-              </View>
+
+                  {recentStats.trajectory_points?.length > 0 && (
+                    <TouchableOpacity 
+                      style={[styles.drsWidgetBtn, {backgroundColor: '#ff1744'}]} 
+                      onPress={() => startTrailAnimation(recentStats.trajectory_points)}
+                    >
+                      <Text style={styles.drsWidgetBtnText}>🎥 REPLAY TRACER</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity 
+                    style={[styles.drsWidgetBtn, {backgroundColor: '#00e676', marginTop: 6}]} 
+                    onPress={resetForNextDelivery}
+                  >
+                    <Text style={[styles.drsWidgetBtnText, {color: '#000', fontWeight: '900'}]}>⚡ NEXT BALL</Text>
+                  </TouchableOpacity>
+                </View>
+              )
             )}
 
-            {/* MANUAL BOWL TRIGGER (IF NOT AUTONOMOUS) */}
-            {engineState === 'IDLE' && !isAutonomous && (
-              <View style={styles.actionBottomBar}>
-                <TouchableOpacity style={styles.recordBtn} onPress={startRecordingInternal}>
-                  <View style={styles.recordBtnInner} />
-                  <Text style={styles.recordBtnText}>START DELIVERY</Text>
+            {/* ACTION BOTTOM BAR - NEVER TRAPS THE USER */}
+            <View style={styles.actionBottomBar} pointerEvents="box-none">
+              {engineState === 'RECORDING_CLIP' && (
+                <TouchableOpacity style={styles.stopRecordingBtn} onPress={stopRecordingInternal}>
+                  <Square color="#fff" size={18} fill="#fff" />
+                  <Text style={styles.stopRecordingBtnText}>STOP DELIVERY</Text>
                 </TouchableOpacity>
-              </View>
-            )}
+              )}
+
+              {engineState === 'IDLE' && (
+                <View style={styles.idleActionContainer}>
+                  <TouchableOpacity 
+                    style={[styles.recordBtn, isAutonomous && styles.recordBtnAutonomous]} 
+                    onPress={startRecordingInternal}
+                  >
+                    <View style={[styles.recordBtnInner, isAutonomous && { backgroundColor: '#00e676' }]} />
+                    <Text style={styles.recordBtnText}>
+                      {isAutonomous ? '⚡ BOWL NOW (MANUAL OVERRIDE)' : 'START DELIVERY'}
+                    </Text>
+                  </TouchableOpacity>
+                  {isAutonomous && (
+                    <Text style={styles.autonomousHintText}>
+                      AI is listening for run-up... or tap above to record manually
+                    </Text>
+                  )}
+                </View>
+              )}
+            </View>
 
             {/* ADVANCED SCOREBOARD */}
             {sessionType === 'MATCH' && (
@@ -721,6 +859,12 @@ export default function LiveCameraScreen({ route, navigation }) {
                     <Text style={styles.scoreBoxText}>W</Text>
                   </TouchableOpacity>
                 </View>
+                <TouchableOpacity 
+                  style={styles.skipScoringBtn} 
+                  onPress={resetForNextDelivery}
+                >
+                  <Text style={styles.skipScoringText}>NEXT BALL (SKIP SCORING)</Text>
+                </TouchableOpacity>
               </View>
             )}
             
@@ -819,5 +963,40 @@ const styles = StyleSheet.create({
   statLineValue: { color: '#fff', fontWeight: 'bold', fontSize: 12 },
   stumpTargetText: { color: '#ffea00', fontWeight: 'bold', fontSize: 11, marginTop: 4, textAlign: 'center' },
   drsWidgetBtn: { flexDirection: 'row', backgroundColor: '#2979ff', padding: 8, borderRadius: 8, marginTop: 8, justifyContent: 'center', alignItems: 'center' },
-  drsWidgetBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 11, marginLeft: 5 }
+  drsWidgetBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 11, marginLeft: 5 },
+
+  pitchSelectorRow: { flexDirection: 'row', justifyContent: 'space-between', marginVertical: 10 },
+  pitchChoiceBtn: { flex: 1, paddingVertical: 10, marginHorizontal: 3, backgroundColor: '#333', borderRadius: 8, alignItems: 'center', borderWidth: 1, borderColor: '#555' },
+  pitchChoiceBtnActive: { backgroundColor: '#00e676', borderColor: '#00e676' },
+  pitchChoiceText: { color: '#fff', fontSize: 11, fontWeight: 'bold' },
+  pitchChoiceTextActive: { color: '#000', fontWeight: '900' },
+
+  skipCalibrationBtn: { marginLeft: 12, backgroundColor: 'rgba(255,255,255,0.2)', paddingVertical: 14, paddingHorizontal: 16, borderRadius: 30 },
+  skipCalibrationText: { color: '#fff', fontWeight: 'bold', fontSize: 13 },
+
+  tracerHeaderBar: { position: 'absolute', top: 50, left: 20, right: 20, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  tracerBadge: { backgroundColor: 'rgba(0,0,0,0.85)', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#ff1744', flexDirection: 'row', alignItems: 'center' },
+  tracerDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#ff1744', marginRight: 8 },
+  tracerTitle: { color: '#fff', fontWeight: 'bold', fontSize: 13, letterSpacing: 1 },
+  tracerCloseBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: 'rgba(0,0,0,0.85)', borderWidth: 1, borderColor: '#ff1744', justifyContent: 'center', alignItems: 'center' },
+  tracerBottomBar: { position: 'absolute', bottom: 40, alignSelf: 'center', flexDirection: 'row', gap: 12 },
+  tracerReplayBtn: { backgroundColor: 'rgba(0,0,0,0.85)', borderWidth: 1.5, borderColor: '#ff1744', paddingVertical: 12, paddingHorizontal: 20, borderRadius: 25 },
+  tracerReplayText: { color: '#fff', fontWeight: '900', fontSize: 13 },
+  tracerNextBallBtn: { backgroundColor: '#00e676', paddingVertical: 12, paddingHorizontal: 24, borderRadius: 25 },
+  tracerNextBallText: { color: '#000', fontWeight: '900', fontSize: 13 },
+
+  settingsIconBtn: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.6)', paddingVertical: 8, paddingHorizontal: 12, borderRadius: 20, alignItems: 'center', borderWidth: 1, borderColor: '#555' },
+  settingsIconText: { color: '#00e676', fontWeight: 'bold', fontSize: 12, marginLeft: 5 },
+
+  minimizedStatsPill: { position: 'absolute', top: 120, right: 15, backgroundColor: 'rgba(0,0,0,0.85)', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, borderWidth: 1, borderColor: '#00e676' },
+  minimizedStatsText: { color: '#00e676', fontWeight: '900', fontSize: 12 },
+
+  stopRecordingBtn: { flexDirection: 'row', backgroundColor: '#ff1744', paddingVertical: 14, paddingHorizontal: 28, borderRadius: 30, alignItems: 'center', elevation: 10 },
+  stopRecordingBtnText: { color: '#fff', fontWeight: '900', fontSize: 15, marginLeft: 8 },
+  idleActionContainer: { alignItems: 'center' },
+  recordBtnAutonomous: { borderColor: '#00e676', backgroundColor: 'rgba(0,0,0,0.85)' },
+  autonomousHintText: { color: '#aaa', fontSize: 11, marginTop: 6, fontWeight: '600' },
+
+  skipScoringBtn: { marginTop: 12, paddingVertical: 10, backgroundColor: '#333', borderRadius: 10, alignItems: 'center' },
+  skipScoringText: { color: '#aaa', fontWeight: 'bold', fontSize: 12 }
 });
