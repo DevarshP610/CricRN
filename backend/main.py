@@ -22,6 +22,54 @@ os.makedirs("temp_videos", exist_ok=True)
 def ping():
     return {"status": "ok", "message": "CricCoach Backend is running"}
 
+from fastapi import Depends
+from sqlalchemy.orm import Session
+from database import get_db, Match, Ball
+from pydantic import BaseModel
+from typing import List, Optional
+
+class MatchCreate(BaseModel):
+    team_a: str
+    team_b: str
+    format: str
+    overs: int
+    summary: Optional[dict] = None
+
+class BallCreate(BaseModel):
+    inning: int
+    over_number: int
+    ball_number: int
+    bowler: str
+    batsman: str
+    speed: float
+    swing: float
+    turn: float
+    pitching: str
+    impact: str
+    wickets: str
+    runs: int = 0
+    is_wicket: str = "No"
+
+@app.post("/api/matches")
+def create_match(match: MatchCreate, db: Session = Depends(get_db)):
+    db_match = Match(**match.dict())
+    db.add(db_match)
+    db.commit()
+    db.refresh(db_match)
+    return db_match
+
+@app.post("/api/matches/{match_id}/balls")
+def save_ball(match_id: int, ball: BallCreate, db: Session = Depends(get_db)):
+    db_ball = Ball(**ball.dict(), match_id=match_id)
+    db.add(db_ball)
+    db.commit()
+    db.refresh(db_ball)
+    return db_ball
+
+@app.get("/api/matches")
+def get_matches(db: Session = Depends(get_db)):
+    return db.query(Match).order_by(Match.created_at.desc()).all()
+
 from fastapi import WebSocket, WebSocketDisconnect
 import asyncio
 
