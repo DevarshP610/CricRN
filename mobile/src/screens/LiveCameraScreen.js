@@ -137,7 +137,8 @@ export default function LiveCameraScreen({ route, navigation }) {
           try {
             // takeSnapshot grabs the preview directly from the GPU, bypassing the startRecording lock!
             const photo = await cameraRef.current.takeSnapshot({ quality: 50 });
-            const base64 = await FileSystem.readAsStringAsync(photo.path, { encoding: FileSystem.EncodingType.Base64 });
+            const photoPath = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
+            const base64 = await FileSystem.readAsStringAsync(photoPath, { encoding: FileSystem.EncodingType.Base64 });
             wsRef.current.send(JSON.stringify({ type: 'frame', data: base64 }));
           } catch (e) {
             console.log("Snapshot failed: ", e);
