@@ -113,12 +113,19 @@ export default function LiveCameraScreen({ route, navigation }) {
   };
 
   const wsRef = useRef(null);
+  const fallbackTimerRef = useRef(null);
 
   const connectAILiveStream = () => {
     const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://192.168.2.65:8000';
     const WS_URL = API_URL.replace('http', 'ws').replace('https', 'wss') + '/ws/live-stream';
     
     wsRef.current = new WebSocket(WS_URL);
+    
+    // Safety Net: Hard stop after 8 seconds in case the backend is offline or missed the ball
+    fallbackTimerRef.current = setTimeout(() => {
+      console.log("AI Auto-Stop Fallback triggered!");
+      stopRecording();
+    }, 8000);
     
     wsRef.current.onopen = () => {
       // Stream live frames to Python AI
@@ -135,7 +142,9 @@ export default function LiveCameraScreen({ route, navigation }) {
     wsRef.current.onmessage = async (e) => {
       const msg = JSON.parse(e.data);
       if (msg.action === 'STOP_RECORDING') {
+        console.log("AI detected dead ball! Stopping.");
         if (wsRef.current?.streamInterval) clearInterval(wsRef.current.streamInterval);
+        if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
         wsRef.current.close();
         await stopRecording();
       }
@@ -175,7 +184,7 @@ export default function LiveCameraScreen({ route, navigation }) {
   };
 
   const stopRecording = async () => {
-    if (cameraRef.current && engineState === 'RECORDING_CLIP') {
+    if (cameraRef.current) {
       try {
         if (wsRef.current) {
           if (wsRef.current.streamInterval) clearInterval(wsRef.current.streamInterval);

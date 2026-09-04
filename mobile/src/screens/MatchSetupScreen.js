@@ -32,11 +32,11 @@ export default function MatchSetupScreen({ navigation }) {
       sessionType: 'MATCH',
       matchDetails: { 
         teamA, teamB, format, overs: parseInt(overs) || 20,
-        toss: { winner: tossWinner, decision: tossDecision }
-      },
-      battingTeam: { name: battingTeamName, roster: battingRoster },
-      bowlingTeam: { name: bowlingTeamName, roster: bowlingRoster },
-      openingBatsmen: { striker, nonStriker }
+        toss: { winner: tossWinner, decision: tossDecision },
+        battingTeamName, bowlingTeamName,
+        battingRoster, bowlingRoster,
+        striker, nonStriker
+      }
     });
   };
 
