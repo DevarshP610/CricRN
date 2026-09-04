@@ -269,6 +269,9 @@ async def upload_video(file: UploadFile = File(...), pitch_length: float = Form(
         "turn": tracking_data.get("turn", 0),
         "videoUrl": tracking_data.get("videoUrl", None),
         "trajectory_points": tracking_data.get("trajectory_points", []),
+        "flight_start_frame": tracking_data.get("flight_start_frame", 0),
+        "bounce_frame": tracking_data.get("bounce_frame", 0),
+        "dead_ball_frame": tracking_data.get("dead_ball_frame", 0),
         "hawkeye": tracking_data.get("hawkeye", {
             "pitching": "UNKNOWN",
             "impact": "UNKNOWN",
