@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, SafeAreaView, ScrollView, Alert } from 'react-native';
-import { Trophy, Plus, X } from 'lucide-react-native';
+import { Trophy } from 'lucide-react-native';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -12,8 +12,7 @@ export default function MatchSetupScreen({ navigation }) {
   
   const [teamARoster, setTeamARoster] = useState(['Player 1', 'Player 2', 'Player 3', 'Player 4', 'Player 5', 'Player 6']);
   const [teamBRoster, setTeamBRoster] = useState(['Player 1', 'Player 2', 'Player 3', 'Player 4', 'Player 5', 'Player 6']);
-  
-  // Toss
+
   const [tossWinner, setTossWinner] = useState('Team A');
   const [tossDecision, setTossDecision] = useState('BAT');
 
@@ -51,111 +50,139 @@ export default function MatchSetupScreen({ navigation }) {
 
         <ScrollView style={styles.content} contentContainerStyle={{ paddingBottom: 50 }}>
           
-            </TouchableOpacity>
-          </View>
-          <View style={styles.tossRow}>
-            <TouchableOpacity style={[styles.tossBtn, tossDecision === 'BAT' && styles.tossActive]} onPress={() => setTossDecision('BAT')}>
-              <Text style={styles.tossText}>Bat First</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[styles.tossBtn, tossDecision === 'BOWL' && styles.tossActive]} onPress={() => setTossDecision('BOWL')}>
-              <Text style={styles.tossText}>Bowl First</Text>
-            </TouchableOpacity>
-          </View>
-          <Text style={styles.tossResultText}>🏏 {battingTeamName} is batting first.</Text>
-        </View>
-
-        {/* Team A Roster */}
-        <View style={styles.section}>
-          <Text style={styles.label}>{teamA} Roster ({teamARoster.length})</Text>
-          <View style={styles.addPlayerRow}>
-            <TextInput style={styles.addPlayerInput} value={newPlayerA} onChangeText={setNewPlayerA} placeholder="Add Player..." placeholderTextColor="#666" />
-            <TouchableOpacity style={styles.addBtn} onPress={() => addPlayer('A')}><Plus color="#000" size={20} /></TouchableOpacity>
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.rosterScroll}>
-            {teamARoster.map((p, i) => (
-              <View key={i} style={styles.playerChip}>
-                <Text style={styles.playerChipText}>{p}</Text>
-                <TouchableOpacity onPress={() => removePlayer('A', i)}><X color="#ff1744" size={16}/></TouchableOpacity>
+          <BlurView intensity={40} tint="dark" style={styles.section}>
+            <Text style={styles.sectionTitle}>TEAMS & FORMAT</Text>
+            
+            <View style={styles.inputRow}>
+              <View style={styles.halfInput}>
+                <Text style={styles.label}>Team A</Text>
+                <TextInput style={styles.input} value={teamA} onChangeText={setTeamA} placeholderTextColor="#666" />
               </View>
-            ))}
-          </ScrollView>
-        </View>
-
-        {/* Team B Roster */}
-        <View style={styles.section}>
-          <Text style={styles.label}>{teamB} Roster ({teamBRoster.length})</Text>
-          <View style={styles.addPlayerRow}>
-            <TextInput style={styles.addPlayerInput} value={newPlayerB} onChangeText={setNewPlayerB} placeholder="Add Player..." placeholderTextColor="#666" />
-            <TouchableOpacity style={styles.addBtn} onPress={() => addPlayer('B')}><Plus color="#000" size={20} /></TouchableOpacity>
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.rosterScroll}>
-            {teamBRoster.map((p, i) => (
-              <View key={i} style={styles.playerChip}>
-                <Text style={styles.playerChipText}>{p}</Text>
-                <TouchableOpacity onPress={() => removePlayer('B', i)}><X color="#ff1744" size={16}/></TouchableOpacity>
+              <Text style={styles.vsText}>VS</Text>
+              <View style={styles.halfInput}>
+                <Text style={styles.label}>Team B</Text>
+                <TextInput style={styles.input} value={teamB} onChangeText={setTeamB} placeholderTextColor="#666" />
               </View>
-            ))}
-          </ScrollView>
-        </View>
+            </View>
 
-        <View style={styles.section}>
-          <Text style={styles.label}>Select Opening Batsmen</Text>
-          <Text style={styles.subLabel}>Striker</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom: 15}}>
-            {battingRoster.map((p, i) => (
-              <TouchableOpacity key={i} style={[styles.selectPill, striker === p && styles.activePill]} onPress={() => setStriker(p)}>
-                <Text style={styles.selectPillText}>{p}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-          <Text style={styles.subLabel}>Non-Striker</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-            {battingRoster.map((p, i) => (
-              <TouchableOpacity key={i} style={[styles.selectPill, nonStriker === p && styles.activePill]} onPress={() => setNonStriker(p)}>
-                <Text style={styles.selectPillText}>{p}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
+            <View style={styles.inputRow}>
+              <View style={styles.halfInput}>
+                <Text style={styles.label}>Format</Text>
+                <View style={styles.toggleGroup}>
+                  <TouchableOpacity style={[styles.toggleBtn, format === 'T20' && styles.toggleActive]} onPress={() => setFormat('T20')}>
+                    <Text style={[styles.toggleText, format === 'T20' && styles.toggleTextActive]}>T20</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.toggleBtn, format === 'Custom' && styles.toggleActive]} onPress={() => setFormat('Custom')}>
+                    <Text style={[styles.toggleText, format === 'Custom' && styles.toggleTextActive]}>Cstm</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              <View style={styles.halfInput}>
+                <Text style={styles.label}>Overs</Text>
+                <TextInput style={styles.input} value={overs} onChangeText={setOvers} keyboardType="numeric" />
+              </View>
+            </View>
+          </BlurView>
 
-        <TouchableOpacity style={styles.startBtn} onPress={handleStart}>
-          <Text style={styles.startBtnText}>START MATCH</Text>
-        </TouchableOpacity>
-      </ScrollView>
-    </SafeAreaView>
+          <BlurView intensity={40} tint="dark" style={styles.section}>
+            <Text style={styles.sectionTitle}>THE TOSS</Text>
+            <View style={styles.inputRow}>
+              <View style={styles.halfInput}>
+                <Text style={styles.label}>Toss Won By</Text>
+                <View style={styles.toggleGroup}>
+                  <TouchableOpacity style={[styles.toggleBtn, tossWinner === 'Team A' && styles.toggleActive]} onPress={() => setTossWinner('Team A')}>
+                    <Text style={[styles.toggleText, tossWinner === 'Team A' && styles.toggleTextActive]}>Team A</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.toggleBtn, tossWinner === 'Team B' && styles.toggleActive]} onPress={() => setTossWinner('Team B')}>
+                    <Text style={[styles.toggleText, tossWinner === 'Team B' && styles.toggleTextActive]}>Team B</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+              <View style={styles.halfInput}>
+                <Text style={styles.label}>Decision</Text>
+                <View style={styles.toggleGroup}>
+                  <TouchableOpacity style={[styles.toggleBtn, tossDecision === 'BAT' && styles.toggleActive]} onPress={() => setTossDecision('BAT')}>
+                    <Text style={[styles.toggleText, tossDecision === 'BAT' && styles.toggleTextActive]}>BAT</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[styles.toggleBtn, tossDecision === 'BOWL' && styles.toggleActive]} onPress={() => setTossDecision('BOWL')}>
+                    <Text style={[styles.toggleText, tossDecision === 'BOWL' && styles.toggleTextActive]}>BOWL</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+            <Text style={styles.tossSummary}>{battingTeamName} will bat first.</Text>
+          </BlurView>
+
+          <BlurView intensity={40} tint="dark" style={styles.section}>
+            <Text style={styles.sectionTitle}>OPENING BATSMEN</Text>
+            <Text style={styles.subLabel}>Select from {battingTeamName} roster:</Text>
+            
+            <View style={styles.rosterSelection}>
+              {battingRoster.map((player, idx) => (
+                <TouchableOpacity 
+                  key={idx} 
+                  style={[styles.rosterPill, striker === player && styles.strikerPill, nonStriker === player && styles.nonStrikerPill]}
+                  onPress={() => {
+                    if (striker === player) setStriker('');
+                    else if (nonStriker === player) setNonStriker('');
+                    else if (!striker) setStriker(player);
+                    else if (!nonStriker) setNonStriker(player);
+                  }}
+                >
+                  <Text style={styles.rosterPillText}>{player}</Text>
+                  {striker === player && <Text style={styles.pillBadge}>ST</Text>}
+                  {nonStriker === player && <Text style={styles.pillBadge}>NS</Text>}
+                </TouchableOpacity>
+              ))}
+            </View>
+          </BlurView>
+
+        </ScrollView>
+
+        <View style={styles.bottomBar}>
+          <TouchableOpacity style={styles.startBtn} onPress={handleStart}>
+            <Text style={styles.startBtnText}>START MATCH</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0a0a0a' },
-  scroll: { padding: 20, paddingTop: 40, paddingBottom: 100 },
-  title: { fontSize: 32, fontWeight: '900', color: '#fff', marginBottom: 20 },
+  container: { flex: 1 },
+  header: { flexDirection: 'row', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: 'rgba(255,255,255,0.05)' },
+  headerTitle: { color: '#00e676', fontSize: 24, fontWeight: '900', marginLeft: 15, letterSpacing: 1 },
   
-  section: { backgroundColor: '#121212', padding: 20, borderRadius: 16, marginBottom: 20, borderWidth: 1, borderColor: '#222' },
-  sectionRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
+  content: { flex: 1, padding: 15 },
   
-  label: { color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 10 },
-  subLabel: { color: '#888', fontSize: 14, marginBottom: 5 },
-  input: { backgroundColor: '#1a1a1a', color: '#fff', padding: 15, borderRadius: 10, borderWidth: 1, borderColor: '#333', marginBottom: 15 },
+  section: { backgroundColor: 'rgba(255,255,255,0.02)', padding: 20, borderRadius: 24, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)', overflow: 'hidden' },
+  sectionTitle: { color: '#fff', fontSize: 16, fontWeight: 'bold', marginBottom: 15, letterSpacing: 1 },
   
-  tossRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  tossBtn: { flex: 1, backgroundColor: '#1a1a1a', padding: 15, borderRadius: 10, borderWidth: 1, borderColor: '#333', alignItems: 'center', marginHorizontal: 5 },
-  tossActive: { backgroundColor: 'rgba(0, 230, 118, 0.2)', borderColor: '#00e676' },
-  tossText: { color: '#fff', fontWeight: 'bold' },
-  tossResultText: { color: '#00e676', textAlign: 'center', marginTop: 10, fontWeight: 'bold', fontSize: 16 },
+  inputRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
+  halfInput: { flex: 1 },
+  vsText: { color: '#888', fontWeight: 'bold', marginHorizontal: 15, marginTop: 25 },
+  
+  label: { color: 'rgba(255,255,255,0.7)', fontSize: 12, marginBottom: 8, fontWeight: 'bold' },
+  input: { backgroundColor: 'rgba(0,0,0,0.5)', color: '#fff', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#333' },
+  
+  toggleGroup: { flexDirection: 'row', backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 10, padding: 3, borderWidth: 1, borderColor: '#333' },
+  toggleBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 8 },
+  toggleActive: { backgroundColor: '#00e676' },
+  toggleText: { color: '#888', fontWeight: 'bold' },
+  toggleTextActive: { color: '#000' },
+  
+  tossSummary: { color: '#00e676', textAlign: 'center', marginTop: 10, fontWeight: 'bold' },
 
-  addPlayerRow: { flexDirection: 'row', marginBottom: 15 },
-  addPlayerInput: { flex: 1, backgroundColor: '#1a1a1a', color: '#fff', padding: 12, borderRadius: 10, borderWidth: 1, borderColor: '#333' },
-  addBtn: { backgroundColor: '#00e676', padding: 12, borderRadius: 10, marginLeft: 10, justifyContent: 'center' },
+  subLabel: { color: '#888', fontSize: 12, marginBottom: 15 },
+  rosterSelection: { flexDirection: 'row', flexWrap: 'wrap' },
+  rosterPill: { backgroundColor: 'rgba(0,0,0,0.5)', paddingVertical: 8, paddingHorizontal: 15, borderRadius: 20, marginRight: 10, marginBottom: 10, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#333' },
+  rosterPillText: { color: '#fff' },
+  strikerPill: { backgroundColor: '#ff1744', borderColor: '#ff1744' },
+  nonStrikerPill: { backgroundColor: '#2979ff', borderColor: '#2979ff' },
+  pillBadge: { color: '#fff', fontSize: 10, fontWeight: 'bold', marginLeft: 5, backgroundColor: 'rgba(0,0,0,0.3)', paddingHorizontal: 4, paddingVertical: 2, borderRadius: 4 },
   
-  rosterScroll: { paddingBottom: 10 },
-  playerChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#222', paddingVertical: 8, paddingHorizontal: 15, borderRadius: 20, marginRight: 10 },
-  playerChipText: { color: '#fff', marginRight: 10 },
-
-  selectPill: { backgroundColor: '#222', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 20, marginRight: 10, borderWidth: 1, borderColor: '#333' },
-  activePill: { backgroundColor: '#00e676', borderColor: '#00e676' },
-  selectPillText: { color: '#fff', fontWeight: 'bold' },
-
-  startBtn: { backgroundColor: '#00e676', padding: 20, borderRadius: 15, alignItems: 'center', marginTop: 10 },
+  bottomBar: { padding: 20, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.05)' },
+  startBtn: { backgroundColor: '#00e676', paddingVertical: 18, borderRadius: 30, alignItems: 'center', shadowColor: '#00e676', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.4, shadowRadius: 8 },
   startBtnText: { color: '#000', fontSize: 18, fontWeight: '900', letterSpacing: 1 }
 });
